@@ -2,7 +2,6 @@ import streamlit as st
 import numpy as np
 
 # --- COURSE DATABASE ---
-# You can add as many courses and holes as you like here!
 COURSES = {
     "Mercer Oaks (Public)": {
         1: {"max_depth_yds": 28.0, "width_yds": 14.0},
@@ -27,7 +26,6 @@ COURSES = {
     "Sample Country Club": {
         1: {"max_depth_yds": 30.0, "width_yds": 16.0},
         2: {"max_depth_yds": 25.0, "width_yds": 14.0},
-        # Add more holes here as needed
     }
 }
 
@@ -52,36 +50,38 @@ st.sidebar.header("1. Course & Setup")
 selected_course = st.sidebar.selectbox("Select Course", list(COURSES.keys()))
 selected_hole = st.sidebar.selectbox("Select Hole Number", list(COURSES[selected_course].keys()))
 
-# Automatically grab default dimensions from the dictionary
 default_depth = COURSES[selected_course][selected_hole]["max_depth_yds"]
 default_width = COURSES[selected_course][selected_hole]["width_yds"]
 
 st.sidebar.header("2. Practice Green Calibration")
 base_stimp = st.sidebar.slider("Base Green Speed (Stimp)", 6.0, 12.0, 8.0)
-target_test_ft = 3.0
-actual_test_ft = st.sidebar.number_input("3-Foot Test: Actual Roll Distance (ft)", min_value=1.0, max_value=8.0, value=3.4, step=0.1)
 
-stimp_ratio = target_test_ft / actual_test_ft
+# 3-pace test (equivalent to 9 feet)
+target_test_paces = 3.0
+actual_test_paces = st.sidebar.number_input("3-Pace Test: Actual Roll Distance (paces)", min_value=1.0, max_value=6.0, value=3.2, step=0.5, help="Pace out how far a standard 3-pace practice stroke rolled.")
+
+# Corrected ratio: If actual > target (rolled past), green is faster -> higher Stimp
+stimp_ratio = actual_test_paces / target_test_paces
 calibrated_stimp = base_stimp * stimp_ratio
 st.sidebar.info(f"**Calibrated Stimp:** {calibrated_stimp:.1f}")
 
-# Main Inputs
+# Main Inputs (Expanded to 0-100 yards)
 st.header(f"Hole #{selected_hole} Specifications")
 col_d1, col_d2 = st.columns(2)
 with col_d1:
-    max_depth_yds = st.number_input("Green Depth (Yards from PDF)", min_value=5.0, max_value=50.0, value=float(default_depth))
+    max_depth_yds = st.number_input("Green Depth (Yards)", min_value=0.0, max_value=100.0, value=float(default_depth), step=1.0)
 with col_d2:
-    green_width_yds = st.number_input("Green Width (Yards)", min_value=5.0, max_value=30.0, value=float(default_width))
+    green_width_yds = st.number_input("Green Width (Yards)", min_value=0.0, max_value=100.0, value=float(default_width), step=1.0)
 
 st.header("On-Course Measurements (in Paces)")
 col3, col4 = st.columns(2)
 with col3:
-    hole_from_front = st.number_input("Hole from Front of Green (paces)", min_value=0.0, max_value=30.0, value=12.0, step=0.5)
-    hole_from_side = st.number_input("Hole from Side Edge (paces)", min_value=0.0, max_value=20.0, value=4.0, step=0.5)
+    hole_from_front = st.number_input("Hole from Front of Green (paces)", min_value=0.0, max_value=100.0, value=12.0, step=0.5)
+    hole_from_side = st.number_input("Hole from Side Edge (paces)", min_value=0.0, max_value=100.0, value=4.0, step=0.5)
     side_ref = st.selectbox("Side Reference", ["Left", "Right"])
 
 with col4:
-    ball_offset_paces = st.number_input("Distance from Hole to Ball (paces)", min_value=0.5, max_value=40.0, value=8.0, step=0.5)
+    ball_offset_paces = st.number_input("Distance from Hole to Ball (paces)", min_value=0.5, max_value=100.0, value=8.0, step=0.5)
     ball_direction = st.selectbox("Ball Position Relative to Hole", ["Right", "Left", "Front", "Back"])
 
 # --- CALCULATION ENGINE ---
