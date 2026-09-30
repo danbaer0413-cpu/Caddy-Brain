@@ -56,16 +56,23 @@ default_width = COURSES[selected_course][selected_hole]["width_yds"]
 st.sidebar.header("2. Practice Green Calibration")
 base_stimp = st.sidebar.slider("Base Green Speed (Stimp)", 6.0, 12.0, 8.0)
 
-# 3-pace test (equivalent to 9 feet)
+# 3-pace test configuration
 target_test_paces = 3.0
-actual_test_paces = st.sidebar.number_input("3-Pace Test: Actual Roll Distance (paces)", min_value=1.0, max_value=6.0, value=3.2, step=0.5, help="Pace out how far a standard 3-pace practice stroke rolled.")
+actual_test_paces = st.sidebar.number_input(
+    "3-Pace Test: Actual Roll Distance (paces)", 
+    min_value=0.5, 
+    max_value=10.0, 
+    value=3.2, 
+    step=0.5, 
+    help="Pace out how far your standard 3-pace practice stroke actually rolled."
+)
 
-# Corrected ratio: If actual > target (rolled past), green is faster -> higher Stimp
+# Calibration Ratio: Actual rolled past target -> Faster green -> Higher Stimp
 stimp_ratio = actual_test_paces / target_test_paces
 calibrated_stimp = base_stimp * stimp_ratio
 st.sidebar.info(f"**Calibrated Stimp:** {calibrated_stimp:.1f}")
 
-# Main Inputs (Expanded to 0-100 yards)
+# Main Inputs (Expanded to 0-100 yards for both depth and width)
 st.header(f"Hole #{selected_hole} Specifications")
 col_d1, col_d2 = st.columns(2)
 with col_d1:
