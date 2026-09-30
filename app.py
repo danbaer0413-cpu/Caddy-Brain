@@ -89,16 +89,18 @@ with col_maps:
     
     course_folder = selected_course.lower().replace(" ", "_").replace("(", "").replace(")", "")
     
+    # Explicitly check variants for Heat map (.png lowercase, etc.)
     heat_path = None
-    for ext in ["png", "PNG", "jpg", "JPG", "jpeg", "JPEG"]:
-        path = f"assets/{course_folder}/{selected_hole}_Heat.{ext}"
+    for filename in [f"{selected_hole}_Heat.png", f"{selected_hole}_heat.png", f"{selected_hole}_Heat.PNG", f"{selected_hole}_heat.PNG"]:
+        path = f"assets/{course_folder}/{filename}"
         if os.path.exists(path):
             heat_path = path
             break
 
+    # Explicitly check variants for Contour map (.JPG capitalized, etc.)
     contour_path = None
-    for ext in ["JPG", "jpg", "jpeg", "JPEG", "png", "PNG"]:
-        path = f"assets/{course_folder}/{selected_hole}_Contour.{ext}"
+    for filename in [f"{selected_hole}_Contour.JPG", f"{selected_hole}_contour.JPG", f"{selected_hole}_Contour.jpg", f"{selected_hole}_contour.jpg", f"{selected_hole}_Contour.jpeg", f"{selected_hole}_Contour.JPEG"]:
+        path = f"assets/{course_folder}/{filename}"
         if os.path.exists(path):
             contour_path = path
             break
@@ -160,5 +162,5 @@ if st.button("Calculate Putt Solution", type="primary"):
     # --- CLEAN, PUNCHY OUTPUTS ---
     st.success("Target Solution Readout:")
     st.markdown(f"### 🎯 **Putt Distance:** {format_feet_inches(straight_dist_ft)} ({straight_paces:.1f} paces)")
-    st.markdown(f"### ➡️ **Aim Point:** {format_feet_inches(aim_ft_val)} ({aim_paces_val:.1f} paces) {aim_side}")
+    st.markdown(f"### ➡️️ **Aim Point:** {format_feet_inches(aim_ft_val)} ({aim_paces_val:.1f} paces) {aim_side}")
     st.markdown(f"### ⚡ **Stroke Speed:** Putt with **{recommended_speed_paces}-pace** power stroke")
