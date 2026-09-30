@@ -87,24 +87,33 @@ with col_maps:
     st.subheader("📖 Green Book Maps")
     m_col1, m_col2 = st.columns(2)
     
-    # Automatically formats selected course name to match subfolder structure (e.g., "Mercer Oaks East" -> "mercer_oaks_east")
     course_folder = selected_course.lower().replace(" ", "_").replace("(", "").replace(")", "")
     
-    # Routes image path directly to the course subfolder inside assets/
-    heat_path = f"assets/{course_folder}/{selected_hole}_Heat.png"
-    contour_path = f"assets/{course_folder}/{selected_hole}_Contour.png"
+    heat_path = None
+    for ext in ["png", "PNG", "jpg", "JPG", "jpeg", "JPEG"]:
+        path = f"assets/{course_folder}/{selected_hole}_Heat.{ext}"
+        if os.path.exists(path):
+            heat_path = path
+            break
+
+    contour_path = None
+    for ext in ["JPG", "jpg", "jpeg", "JPEG", "png", "PNG"]:
+        path = f"assets/{course_folder}/{selected_hole}_Contour.{ext}"
+        if os.path.exists(path):
+            contour_path = path
+            break
     
     with m_col1:
-        if os.path.exists(heat_path):
+        if heat_path:
             st.image(heat_path, caption=f"Hole {selected_hole} Heat Map", use_container_width=True)
         else:
-            st.info(f"Missing: `assets/{course_folder}/{selected_hole}_Heat.png`")
+            st.info(f"Missing Heat Map for Hole {selected_hole}")
             
     with m_col2:
-        if os.path.exists(contour_path):
+        if contour_path:
             st.image(contour_path, caption=f"Hole {selected_hole} Contour", use_container_width=True)
         else:
-            st.info(f"Missing: `assets/{course_folder}/{selected_hole}_Contour.png`")
+            st.info(f"Missing Contour Map for Hole {selected_hole}")
 
 # --- CALCULATION ENGINE ---
 if st.button("Calculate Putt Solution", type="primary"):
