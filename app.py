@@ -200,8 +200,8 @@ if st.button("Calculate Putt Solution", type="primary"):
     recommended_speed_paces = straight_paces * (8.0 / calibrated_stimp) + elevation_speed_adj + 0.3
     recommended_speed_paces = max(1.0, round(recommended_speed_paces, 1))
 
-    # --- DRAW OVERLAY ON CONTOUR MAP (SHOWING ALL ARROWS) ---
-    base_img_path = contour_path if contour_path else heat_path
+    # --- DRAW OVERLAY ON HEAT MAP (MATCHING PIXEL BOUNDS) ---
+    base_img_path = heat_path if heat_path else contour_path
     if base_img_path:
         try:
             annotated_img = Image.open(base_img_path).convert("RGB")
@@ -222,7 +222,6 @@ if st.button("Calculate Putt Solution", type="primary"):
             hx_px, hy_px = ft_to_pixels(x_hole, y_hole)
             tx_px, ty_px = ft_to_pixels(target_x_ft, target_y_ft)
             
-            # Tighter, flattened arc calculation for break path
             mid_x = (bx_px + hx_px) / 2
             mid_y = (by_px + hy_px) / 2
             dx = hx_px - bx_px
@@ -244,12 +243,10 @@ if st.button("Calculate Putt Solution", type="primary"):
                 py = (1 - t)**2 * by_px + 2 * (1 - t) * t * control_y + t**2 * hy_px
                 curve_points.append((px, py))
                 
-            # Draw as a tighter dashed line
             for i in range(len(curve_points) - 1):
                 if i % 2 == 0:
                     draw.line([curve_points[i], curve_points[i+1]], fill="yellow", width=4)
             
-            # Draw Smaller, Clean Markers (Radius = 5px)
             dot_r = 5
             draw.ellipse([bx_px - dot_r, by_px - dot_r, bx_px + dot_r, by_px + dot_r], fill="blue", outline="white", width=1)
             draw.ellipse([hx_px - dot_r, hy_px - dot_r, hx_px + dot_r, hy_px + dot_r], fill="red", outline="white", width=1)
@@ -265,10 +262,9 @@ if st.button("Calculate Putt Solution", type="primary"):
     st.markdown(f"### ⚡ **Stroke Speed:** Putt with **{recommended_speed_paces}-pace** power stroke")
     
     if annotated_img:
-        st.subheader("🔍 Visual Putt Solution Overlay (Contour Map Reference)")
+        st.subheader("🔍 Visual Putt Solution Overlay")
         st.image(annotated_img, use_container_width=True)
         
-        # --- BUILT-IN MAP LEGEND KEY ---
         st.markdown(
             """
             | Marker / Line | Description |
