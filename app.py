@@ -115,7 +115,7 @@ with col_maps:
         else:
             st.info(f"Missing Contour Map for Hole {selected_hole}")
 
-# --- DUAL-MAP VISION ENGINE ---
+# --- DUAL-MAP VISION ENGINE WITH LOCAL LATERAL GRADIENT SAMPLING ---
 if st.button("Calculate Putt Solution", type="primary"):
     ft_per_pace = 3.0
     green_width_ft = green_width_yds * ft_per_pace
@@ -143,13 +143,11 @@ if st.button("Calculate Putt Solution", type="primary"):
     slope_drop = 0.0
     annotated_img = None
     
-    if heat_path and contour_path:
+    if heat_path:
         try:
             heat_img = Image.open(heat_path).convert("RGB")
-            contour_img = Image.open(contour_path).convert("RGB")
             img_w, img_h = heat_img.size
             
-            # --- DYNAMIC Y-AXIS SCALING BASED ON DEPTH ---
             box_x_min, box_x_max = img_w * 0.22, img_w * 0.78
             box_y_bottom = img_h * 0.88
             box_height = max_depth_yds * ((img_h * 0.76) / 28.0)
@@ -163,43 +161,25 @@ if st.button("Calculate Putt Solution", type="primary"):
             bx_px, by_px = ft_to_pixels(x_ball, y_ball)
             hx_px, hy_px = ft_to_pixels(x_hole, y_hole)
             
-            # Sample heat map colors for elevation/slope
-            b_rgb = heat_img.getpixel((bx_px, by_px))
-            h_rgb = heat_img.getpixel((hx_px, hy_px))
+            mid_x_px = int((bx_px + hx_px) / 2)
+            mid_y_px = int((by_px + hy_px) / 2)
+            sample_offset = int(max(5, (box_x_max - box_x_min) * 0.05))
             
-            ball_elevation_score = b_rgb[0] - b_rgb[2]  
-            hole_elevation_score = h_rgb[0] - h_rgb[2]  
+            left_px = (max(0, mid_x_px - sample_offset), mid_y_px)
+            right_px = (min(img_w - 1, mid_x_px + sample_offset), mid_y_px)
             
-            elevation_diff = (hole_elevation_score - ball_elevation_score) / 50.0
-            side_color_shift = (b_rgb[0] - b_rgb[1]) - (h_rgb[0] - h_rgb[1])
+            left_rgb = heat_img.getpixel(left_px)
+            right_rgb = heat_img.getpixel(right_px)
             
+            left_elev = left_rgb[0] - left_rgb[2]
+            right_elev = right_rgb[0] - right_rgb[2]
+            
+            lateral_break = (right_elev - left_elev) / 40.0
             gradient_multiplier = 2.0 if "Double" in slope_steepness else 1.0
-            slope_drop = (elevation_diff + (side_color_shift / 100.0) * (x_hole - x_ball) / green_width_ft) * gradient_multiplier
+            slope_drop = lateral_break * gradient_multiplier
             
         except Exception as e:
             st.warning(f"Vision engine parsing error: {e}")
-            slope_drop = 0.05 * (x_hole - x_ball)
-    elif heat_path:
-        try:
-            img = Image.open(heat_path).convert("RGB")
-            img_w, img_h = img.size
-            box_x_min, box_x_max = img_w * 0.22, img_w * 0.78
-            box_y_bottom = img_h * 0.88
-            box_height = max_depth_yds * ((img_h * 0.76) / 28.0)
-            
-            def ft_to_pixels(x_ft, y_ft):
-                max_depth_ft = max_depth_yds * ft_per_pace
-                px = box_x_min + (x_ft / green_width_ft) * (box_x_max - box_x_min)
-                py = box_y_bottom - (y_ft / max_depth_ft) * box_height
-                return int(max(0, min(px, img_w - 1))), int(max(0, min(py, img_h - 1)))
-                
-            bx_px, by_px = ft_to_pixels(x_ball, y_ball)
-            hx_px, hy_px = ft_to_pixels(x_hole, y_hole)
-            b_rgb = img.getpixel((bx_px, by_px))
-            h_rgb = img.getpixel((hx_px, hy_px))
-            elevation_diff = ((h_rgb[0] - h_rgb[2]) - (b_rgb[0] - b_rgb[2])) / 50.0
-            slope_drop = elevation_diff
-        except Exception:
             slope_drop = 0.05 * (x_hole - x_ball)
 
     if slope_drop == 0.0:
@@ -220,8 +200,8 @@ if st.button("Calculate Putt Solution", type="primary"):
     recommended_speed_paces = straight_paces * (8.0 / calibrated_stimp) + elevation_speed_adj + 0.3
     recommended_speed_paces = max(1.0, round(recommended_speed_paces, 1))
 
-    # --- DRAW OVERLAY WITH COMPACT MARKERS & TIGHTER DASHED PATH ---
-    base_img_path = heat_path if heat_path else contour_path
+    # --- DRAW OVERLAY ON CONTOUR MAP (SHOWING ALL ARROWS) ---
+    base_img_path = contour_path if contour_path else heat_path
     if base_img_path:
         try:
             annotated_img = Image.open(base_img_path).convert("RGB")
@@ -285,7 +265,7 @@ if st.button("Calculate Putt Solution", type="primary"):
     st.markdown(f"### ⚡ **Stroke Speed:** Putt with **{recommended_speed_paces}-pace** power stroke")
     
     if annotated_img:
-        st.subheader("🔍 Visual Putt Solution Overlay")
+        st.subheader("🔍 Visual Putt Solution Overlay (Contour Map Reference)")
         st.image(annotated_img, use_container_width=True)
         
         # --- BUILT-IN MAP LEGEND KEY ---
