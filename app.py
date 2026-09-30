@@ -174,33 +174,30 @@ if st.button("Calculate Putt Solution", type="primary"):
             left_elev = left_rgb[0] - left_rgb[2]
             right_elev = right_rgb[0] - right_rgb[2]
             
-            lateral_break = (right_elev - left_elev) / 40.0
-            gradient_multiplier = 2.0 if "Double" in slope_steepness else 1.0
+            lateral_break = (right_elev - left_elev) / 50.0
+            gradient_multiplier = 1.5 if "Double" in slope_steepness else 1.0
             slope_drop = lateral_break * gradient_multiplier
             
         except Exception as e:
             st.warning(f"Vision engine parsing error: {e}")
-            slope_drop = 0.05 * (x_hole - x_ball)
+            slope_drop = 0.04 * (x_hole - x_ball)
 
     if slope_drop == 0.0:
-        gradient_multiplier = 2.0 if "Double" in slope_steepness else 1.0
-        slope_drop = ((0.04 * x_hole - 0.03 * y_hole) - (0.04 * x_ball - 0.03 * y_ball)) * gradient_multiplier
+        gradient_multiplier = 1.5 if "Double" in slope_steepness else 1.0
+        slope_drop = ((0.03 * x_hole - 0.02 * y_hole) - (0.03 * x_ball - 0.02 * y_hole)) * gradient_multiplier
 
     # Aim & Target Calculations
-    aim_offset_ft = slope_drop * calibrated_stimp * 0.40 * (straight_dist_ft / 10.0)
+    aim_offset_ft = slope_drop * calibrated_stimp * 0.25 * (straight_dist_ft / 10.0)
     aim_side = "Left" if slope_drop < 0 else "Right"
     aim_ft_val = abs(aim_offset_ft)
     aim_paces_val = aim_ft_val / ft_per_pace
     
-    target_x_ft = x_hole + aim_offset_ft
-    target_y_ft = y_hole
-    
     # Speed Recommendation
-    elevation_speed_adj = abs(slope_drop) * 0.4
+    elevation_speed_adj = abs(slope_drop) * 0.3
     recommended_speed_paces = straight_paces * (8.0 / calibrated_stimp) + elevation_speed_adj + 0.3
     recommended_speed_paces = max(1.0, round(recommended_speed_paces, 1))
 
-    # --- DRAW OVERLAY ON HEAT MAP (MATCHING PIXEL BOUNDS) ---
+    # --- DRAW OVERLAY ON HEAT MAP ---
     base_img_path = heat_path if heat_path else contour_path
     if base_img_path:
         try:
@@ -220,18 +217,26 @@ if st.button("Calculate Putt Solution", type="primary"):
                 
             bx_px, by_px = ft_to_pixels(x_ball, y_ball)
             hx_px, hy_px = ft_to_pixels(x_hole, y_hole)
-            tx_px, ty_px = ft_to_pixels(target_x_ft, target_y_ft)
             
+            # --- ABEAM TARGET POINT CALCULATION ---
+            # Position the cyan target abeam with the hole (same Y coordinate as the hole),
+            # offset horizontally by the aim distance in the direction of the break.
+            target_x_ft = x_hole + aim_offset_ft
+            target_y_ft = y_hole  # Exactly abeam with the hole vertically
+            tx_px, ty_px = ft_to_pixels(target_x_ft, target_y_ft)
+
+            # --- SMOOTH ARC PATH FROM BALL -> TARGET -> HOLE (OR DIRECT CURVE) ---
             mid_x = (bx_px + hx_px) / 2
             mid_y = (by_px + hy_px) / 2
-            dx = hx_px - bx_px
-            dy = hy_px - by_px
-            length = np.sqrt(dx**2 + dy**2)
             
-            if length > 0:
-                nx = -dy / length
-                ny = dx / length
-                break_shift = slope_drop * calibrated_stimp * 3.0
+            dx_line = hx_px - bx_px
+            dy_line = hy_px - by_px
+            line_len = np.sqrt(dx_line**2 + dy_line**2)
+            
+            if line_len > 0:
+                nx = -dy_line / line_len
+                ny = dx_line / line_len
+                break_shift = slope_drop * calibrated_stimp * 1.5
                 control_x = mid_x + nx * break_shift
                 control_y = mid_y + ny * break_shift
             else:
@@ -247,6 +252,7 @@ if st.button("Calculate Putt Solution", type="primary"):
                 if i % 2 == 0:
                     draw.line([curve_points[i], curve_points[i+1]], fill="yellow", width=4)
             
+            # Draw Clean Markers (Radius = 5px)
             dot_r = 5
             draw.ellipse([bx_px - dot_r, by_px - dot_r, bx_px + dot_r, by_px + dot_r], fill="blue", outline="white", width=1)
             draw.ellipse([hx_px - dot_r, hy_px - dot_r, hx_px + dot_r, hy_px + dot_r], fill="red", outline="white", width=1)
@@ -271,7 +277,7 @@ if st.button("Calculate Putt Solution", type="primary"):
             | :--- | :--- |
             | 🔵 **Blue Dot** | Ball Position |
             | 🔴 **Red Dot** | Hole (Cup) |
-            | 🩵 **Cyan Dot** | Target Aim Point (Putter Start Line) |
+            | 🩵 **Cyan Dot** | Target Aim Point Abeam with Hole |
             | 🟡 **Yellow Dashed Line** | Anticipated Break Path |
             """
         )
