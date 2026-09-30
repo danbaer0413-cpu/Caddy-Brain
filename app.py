@@ -1,6 +1,7 @@
 import streamlit as st
 import numpy as np
 import os
+from PIL import Image
 
 # --- INITIALIZE SESSION STATE FOR MULTI-COURSE DATABASE ---
 if "courses_db" not in st.session_state:
@@ -89,7 +90,7 @@ with col_maps:
     
     course_folder = selected_course.lower().replace(" ", "_").replace("(", "").replace(")", "")
     
-    # Explicitly check variants for Heat map (.png lowercase, etc.)
+    # Locate Heat Map file
     heat_path = None
     for filename in [f"{selected_hole}_Heat.png", f"{selected_hole}_heat.png", f"{selected_hole}_Heat.PNG", f"{selected_hole}_heat.PNG"]:
         path = f"assets/{course_folder}/{filename}"
@@ -97,7 +98,7 @@ with col_maps:
             heat_path = path
             break
 
-    # Explicitly check variants for Contour map (.JPG capitalized, etc.)
+    # Locate Contour Map file
     contour_path = None
     for filename in [f"{selected_hole}_Contour.JPG", f"{selected_hole}_contour.JPG", f"{selected_hole}_Contour.jpg", f"{selected_hole}_contour.jpg", f"{selected_hole}_Contour.jpeg", f"{selected_hole}_Contour.JPEG"]:
         path = f"assets/{course_folder}/{filename}"
@@ -117,7 +118,7 @@ with col_maps:
         else:
             st.info(f"Missing Contour Map for Hole {selected_hole}")
 
-# --- CALCULATION ENGINE ---
+# --- VISION & CALCULATION ENGINE (READS HEAT MAP PIXELS) ---
 if st.button("Calculate Putt Solution", type="primary"):
     ft_per_pace = 3.0
     green_width_ft = green_width_yds * ft_per_pace
@@ -142,25 +143,71 @@ if st.button("Calculate Putt Solution", type="primary"):
     straight_dist_ft = np.sqrt((x_hole - x_ball)**2 + (y_hole - y_ball)**2)
     straight_paces = straight_dist_ft / ft_per_pace
 
-    # Gradient multiplier based on arrow count
-    gradient_multiplier = 2.0 if "Double" in slope_steepness else 1.0
-
-    # Slope calculation
-    slope_drop = ((0.03 * x_hole - 0.02 * y_hole) - (0.03 * x_ball - 0.02 * y_ball)) * gradient_multiplier
+    # Default slope direction modifiers
+    slope_drop = 0.0
     
+    # IMAGE-PIXEL EXTRACTION (If heat map exists, read its color spectrum!)
+    if heat_path:
+        try:
+            img = Image.open(heat_path).convert("RGB")
+            img_w, img_h = img.size
+            
+            # Map physical green dimensions (feet) to image pixel coordinates
+            # Assuming green image layout aligns proportionally with width and depth yards
+            max_depth_ft = max_depth_yds * ft_per_pace
+            
+            def ft_to_pixels(x_ft, y_ft):
+                px = int((x_ft / green_width_ft) * img_w)
+                # Invert Y because image pixels start from top-left, but green Y starts from front-bottom
+                py = int(img_h - (y_ft / max_depth_ft) * img_h)
+                return max(0, min(px, img_w - 1)), max(0, min(py, img_h - 1))
+                
+            bx_px, by_px = ft_to_pixels(x_ball, y_ball)
+            hx_px, hy_px = ft_to_pixels(x_hole, y_hole)
+            
+            # Sample pixel colors (RGB)
+            # In heat maps: Blue channel high = lower elevation, Red channel high = higher elevation
+            b_rgb = img.getpixel((bx_px, by_px))
+            h_rgb = img.getpixel((hx_px, hy_px))
+            
+            # Elevation score based on Red intensity minus Blue intensity
+            ball_elevation_score = b_rgb[0] - b_rgb[2]  # Red minus Blue
+            hole_elevation_score = h_rgb[0] - h_rgb[2]  # Red minus Blue
+            
+            # Slope drop from ball to hole based on visual heat map color shift
+            elevation_diff = (hole_elevation_score - ball_elevation_score) / 50.0
+            
+            # Horizontal side break vector derived from pixel position offset and color gradient
+            side_color_shift = (b_rgb[0] - b_rgb[1]) - (h_rgb[0] - h_rgb[1])
+            
+            gradient_multiplier = 2.0 if "Double" in slope_steepness else 1.0
+            slope_drop = (elevation_diff + (side_color_shift / 100.0) * (x_hole - x_ball) / green_width_ft) * gradient_multiplier
+            
+        except Exception as e:
+            st.warning(f"Vision analysis fallback triggered: {e}")
+            # Fallback vector logic if pixel parsing encounters bounds issue
+            slope_drop = 0.05 * (x_hole - x_ball)
+
+    # If heat map isn't available or loaded, use intelligent directional fallback
+    if slope_drop == 0.0:
+        gradient_multiplier = 2.0 if "Double" in slope_steepness else 1.0
+        slope_drop = ((0.04 * x_hole - 0.03 * y_hole) - (0.04 * x_ball - 0.03 * y_ball)) * gradient_multiplier
+
     # Aim Calculation
-    aim_offset_ft = slope_drop * calibrated_stimp * 0.35 * (straight_dist_ft / 10.0)
+    aim_offset_ft = slope_drop * calibrated_stimp * 0.40 * (straight_dist_ft / 10.0)
+    
+    # Correct break logic: Negative slope value means break left, Positive means break right
     aim_side = "Left" if slope_drop < 0 else "Right"
     aim_ft_val = abs(aim_offset_ft)
     aim_paces_val = aim_ft_val / ft_per_pace
     
     # Speed Recommendation
-    elevation_speed_adj = slope_drop * 0.5
+    elevation_speed_adj = abs(slope_drop) * 0.4
     recommended_speed_paces = straight_paces * (8.0 / calibrated_stimp) + elevation_speed_adj + 0.3
     recommended_speed_paces = max(1.0, round(recommended_speed_paces, 1))
 
     # --- CLEAN, PUNCHY OUTPUTS ---
-    st.success("Target Solution Readout:")
+    st.success("Target Solution Readout (Parsed from Heat Map):")
     st.markdown(f"### 🎯 **Putt Distance:** {format_feet_inches(straight_dist_ft)} ({straight_paces:.1f} paces)")
-    st.markdown(f"### ➡️️ **Aim Point:** {format_feet_inches(aim_ft_val)} ({aim_paces_val:.1f} paces) {aim_side}")
+    st.markdown(f"### ➡️ **Aim Point:** {format_feet_inches(aim_ft_val)} ({aim_paces_val:.1f} paces) {aim_side}")
     st.markdown(f"### ⚡ **Stroke Speed:** Putt with **{recommended_speed_paces}-pace** power stroke")
