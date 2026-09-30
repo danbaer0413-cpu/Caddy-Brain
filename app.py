@@ -115,7 +115,7 @@ with col_maps:
         else:
             st.info(f"Missing Contour Map for Hole {selected_hole}")
 
-# --- DUAL-MAP VISION ENGINE (CONTOUR BOUNDARY + HEAT ELEVATION) ---
+# --- DUAL-MAP VISION ENGINE (SCALED & MARGIN-PROTECTED) ---
 if st.button("Calculate Putt Solution", type="primary"):
     ft_per_pace = 3.0
     green_width_ft = green_width_yds * ft_per_pace
@@ -143,7 +143,6 @@ if st.button("Calculate Putt Solution", type="primary"):
     slope_drop = 0.0
     annotated_img = None
     
-    # DUAL IMAGE PROCESSING
     if heat_path and contour_path:
         try:
             heat_img = Image.open(heat_path).convert("RGB")
@@ -151,23 +150,36 @@ if st.button("Calculate Putt Solution", type="primary"):
             img_w, img_h = heat_img.size
             max_depth_ft = max_depth_yds * ft_per_pace
             
-            # --- AUTOMATED GREEN BOUNDARY DETECTION FROM CONTOUR MAP ---
-            # We convert the contour map to grayscale to locate the dark outline boundaries of the green
-            gray_contour = contour_img.convert("L")
-            arr_contour = np.array(gray_contour)
+            # --- TRACE PERIMETER WITH X-AXIS MARGIN PROTECTION ---
+            contour_arr = np.array(contour_img)
+            r, g, b = contour_arr[:, :, 0], contour_arr[:, :, 1], contour_arr[:, :, 2]
             
-            # Find pixel rows and columns where the green boundary lines/content exist (non-white areas)
-            # Threshold to find non-background pixels (assuming white background > 240)
-            green_mask = arr_contour < 245
-            y_indices, x_indices = np.where(green_mask)
+            # Isolate green outline pixels
+            is_outline = (g > r + 15) & (g > b + 15) & (r < 210) & (g < 230)
+            y_indices, x_indices = np.where(is_outline)
             
-            if len(x_indices) > 0 and len(y_indices) > 0:
-                box_x_min, box_x_max = float(x_indices.min()), float(x_indices.max())
-                box_y_min, box_y_max = float(y_indices.min()), float(y_indices.max())
+            if len(x_indices) > 20:
+                # Exclude outer left/right yardage text columns (middle 64% target zone)
+                center_mask = (x_indices > img_w * 0.18) & (x_indices < img_w * 0.82)
+                valid_x = x_indices[center_mask]
+                valid_y = y_indices[center_mask]
+                
+                if len(valid_x) > 0:
+                    box_x_min, box_x_max = float(valid_x.min()), float(valid_x.max())
+                    box_y_min, box_y_max = float(valid_y.min()), float(valid_y.max())
+                else:
+                    box_x_min, box_x_max = img_w * 0.22, img_w * 0.78
+                    box_y_min, box_y_max = img_h * 0.10, img_h * 0.90
             else:
-                # Fallback box if empty
-                box_x_min, box_x_max = img_w * 0.22, img_w * 0.78
-                box_y_min, box_y_max = img_h * 0.12, img_h * 0.88
+                # Fallback to color fill bounds if outline pixels are sparse
+                heat_arr = np.array(heat_img)
+                is_colored = (heat_arr[:, :, 0] < 240) | (heat_arr[:, :, 1] < 240) | (heat_arr[:, :, 2] < 240)
+                y_idx, x_idx = np.where(is_colored)
+                center_mask = (x_idx > img_w * 0.18) & (x_idx < img_w * 0.82)
+                valid_x = x_idx[center_mask]
+                valid_y = y_idx[center_mask]
+                box_x_min, box_x_max = float(valid_x.min()), float(valid_x.max())
+                box_y_min, box_y_max = float(valid_y.min()), float(valid_y.max())
                 
             box_width = box_x_max - box_x_min
             box_height = box_y_max - box_y_min
@@ -199,13 +211,12 @@ if st.button("Calculate Putt Solution", type="primary"):
             
             draw.line([(bx_px, by_px), (hx_px, hy_px)], fill="yellow", width=6)
             draw.ellipse([bx_px - 12, by_px - 12, bx_px + 12, by_px + 12], fill="blue", outline="white", width=3)
-            draw.ellipse([hx_px - 12, hy_px - 12, hx_px + 12, hy_px + 12], fill="red", outline="white", width=3)
+            draw.ellipse([hx_px - 12, by_px - 12, hx_px + 12, hy_px + 12], fill="red", outline="white", width=3)
             
         except Exception as e:
-            st.warning(f"Dual-map vision parsing error: {e}")
+            st.warning(f"Vision engine parsing error: {e}")
             slope_drop = 0.05 * (x_hole - x_ball)
     elif heat_path:
-        # Fallback if contour is missing
         try:
             img = Image.open(heat_path).convert("RGB")
             img_w, img_h = img.size
@@ -253,7 +264,7 @@ if st.button("Calculate Putt Solution", type="primary"):
     # --- OUTPUTS & VISUAL PROOF ---
     st.success("Target Solution Readout (Dual-Map Parsed):")
     st.markdown(f"### 🎯 **Putt Distance:** {format_feet_inches(straight_dist_ft)} ({straight_paces:.1f} paces)")
-    st.markdown(f"### ➡️️ **Aim Point:** {format_feet_inches(aim_ft_val)} ({aim_paces_val:.1f} paces) {aim_side}")
+    st.markdown(f"### ➡ **Aim Point:** {format_feet_inches(aim_ft_val)} ({aim_paces_val:.1f} paces) {aim_side}")
     st.markdown(f"### ⚡ **Stroke Speed:** Putt with **{recommended_speed_paces}-pace** power stroke")
     
     if annotated_img:
