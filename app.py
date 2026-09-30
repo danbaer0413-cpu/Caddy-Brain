@@ -2,14 +2,21 @@ import streamlit as st
 import numpy as np
 import os
 from PIL import Image, ImageDraw
+from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- INITIALIZE SESSION STATE FOR MULTI-COURSE DATABASE ---
+# --- INITIALIZE SESSION STATE FOR MULTI-COURSE DATABASE & POSITIONS ---
 if "courses_db" not in st.session_state:
     st.session_state.courses_db = {
         "Mercer Oaks East": {
             i: {"max_depth_yds": 28.0, "width_yds": 14.0} for i in range(1, 19)
         }
     }
+
+# Initialize coordinate states if not present
+if "ball_coords" not in st.session_state:
+    st.session_state.ball_coords = {"x_ft": 12.0, "y_ft": 4.0}
+if "hole_coords" not in st.session_state:
+    st.session_state.hole_coords = {"x_ft": 7.0, "y_ft": 36.0}
 
 # --- HELPER: CONVERT FEET TO FEET & INCHES ---
 def format_feet_inches(total_feet):
@@ -56,120 +63,95 @@ stimp_ratio = actual_test_paces / 3.0
 calibrated_stimp = base_stimp * stimp_ratio
 st.sidebar.info(f"Calibrated Stimp: **{calibrated_stimp:.1f}**")
 
-# --- MAIN SCREEN LAYOUT: INPUTS & DUAL MAP VIEWER ---
+# --- MAIN SCREEN LAYOUT: INPUTS & INTERACTIVE MAP ---
 st.header(f"Hole #{selected_hole} Specifications ({selected_course})")
 
-col_inputs, col_maps = st.columns([1.1, 1.2])
+col_inputs, col_map = st.columns([1.0, 1.3])
 
 with col_inputs:
-    st.subheader("Pacing & Setup")
-    col_d1, col_d2 = st.columns(2)
-    with col_d1:
-        max_depth_yds = st.number_input("Depth (Yds)", min_value=0.0, max_value=100.0, value=float(saved_depth), step=1.0)
-    with col_d2:
-        green_width_yds = st.number_input("Width (Yds)", min_value=0.0, max_value=100.0, value=float(saved_width), step=1.0)
+    st.subheader("Green Dimensions")
+    max_depth_yds = st.number_input("Depth (Yds)", min_value=0.0, max_value=100.0, value=float(saved_depth), step=1.0)
+    green_width_yds = st.number_input("Width (Yds)", min_value=0.0, max_value=100.0, value=float(saved_width), step=1.0)
 
     st.session_state.courses_db[selected_course][selected_hole]["max_depth_yds"] = max_depth_yds
     st.session_state.courses_db[selected_course][selected_hole]["width_yds"] = green_width_yds
 
-    col3, col4 = st.columns(2)
-    with col3:
-        hole_from_front = st.number_input("Hole from Front (paces)", min_value=0.0, max_value=100.0, value=12.0, step=0.5)
-        hole_from_side = st.number_input("Hole from Side (paces)", min_value=0.0, max_value=100.0, value=4.0, step=0.5)
-        side_ref = st.selectbox("Side Ref", ["Left", "Right"])
-
-    with col4:
-        ball_offset_paces = st.number_input("Ball to Hole (paces)", min_value=0.5, max_value=100.0, value=8.0, step=0.5)
-        ball_direction = st.selectbox("Ball Position", ["Right", "Left", "Front", "Back"])
-        slope_steepness = st.selectbox("Contour Gradient", ["Standard Slope (Single Arrow)", "Steep Slope (Double Arrows ⚡)"])
-
-with col_maps:
-    st.subheader("📖 Green Book Maps")
-    m_col1, m_col2 = st.columns(2)
+    st.subheader("Interactive Placement Mode")
+    placement_mode = st.radio("Click on map to place:", ["🔴 Hole Position", "🔵 Ball Position"], horizontal=True)
     
-    course_folder = selected_course.lower().replace(" ", "_").replace("(", "").replace(")", "")
+    slope_steepness = st.selectbox("Contour Gradient", ["Standard Slope (Single Arrow)", "Steep Slope (Double Arrows ⚡)"])
     
-    heat_path = None
-    for filename in [f"{selected_hole}_Heat.png", f"{selected_hole}_heat.png", f"{selected_hole}_Heat.PNG", f"{selected_hole}_heat.PNG"]:
-        path = f"assets/{course_folder}/{filename}"
-        if os.path.exists(path):
-            heat_path = path
-            break
+    if st.button("Reset Marker Positions", type="secondary"):
+        st.session_state.ball_coords = {"x_ft": green_width_yds * 1.5, "y_ft": 10.0}
+        st.session_state.hole_coords = {"x_ft": green_width_yds * 1.5, "y_ft": 30.0}
+        st.rerun()
 
-    contour_path = None
-    for filename in [f"{selected_hole}_Contour.JPG", f"{selected_hole}_contour.JPG", f"{selected_hole}_Contour.jpg", f"{selected_hole}_contour.jpg", f"{selected_hole}_Contour.jpeg", f"{selected_hole}_Contour.JPEG"]:
+# Locate assets
+course_folder = selected_course.lower().replace(" ", "_").replace("(", "").replace(")", "")
+heat_path = None
+for filename in [f"{selected_hole}_Heat.png", f"{selected_hole}_heat.png", f"{selected_hole}_Heat.PNG", f"{selected_hole}_heat.PNG"]:
+    path = f"assets/{course_folder}/{filename}"
+    if os.path.exists(path):
+        heat_path = path
+        break
+
+contour_path = None
+for filename in [f"{selected_hole}_Contour.JPG", f"{selected_hole}_contour.JPG", f"{selected_hole}_Contour.jpg", f"{selected_hole}_contour.jpg", f"{selected_hole}_Contour.jpeg", f"{selected_hole}_Contour.JPEG"]:
         path = f"assets/{course_folder}/{filename}"
         if os.path.exists(path):
             contour_path = path
             break
-    
-    with m_col1:
-        if heat_path:
-            st.image(heat_path, caption=f"Hole {selected_hole} Heat Map", use_container_width=True)
-        else:
-            st.info(f"Missing Heat Map for Hole {selected_hole}")
-            
-    with m_col2:
-        if contour_path:
-            st.image(contour_path, caption=f"Hole {selected_hole} Contour", use_container_width=True)
-        else:
-            st.info(f"Missing Contour Map for Hole {selected_hole}")
 
-# --- DUAL-MAP VISION ENGINE WITH LOCAL LATERAL GRADIENT SAMPLING ---
-if st.button("Calculate Putt Solution", type="primary"):
-    ft_per_pace = 3.0
-    green_width_ft = green_width_yds * ft_per_pace
-    
-    # Hole Coordinates
-    y_hole = hole_from_front * ft_per_pace
-    x_hole = hole_from_side * ft_per_pace if side_ref.lower() == 'left' else green_width_ft - (hole_from_side * ft_per_pace)
+base_img_path = heat_path if heat_path else contour_path
+
+# --- PRE-RENDER INTERACTIVE PREVIEW IMAGE WITH EXISTING MARKERS ---
+ft_per_pace = 3.0
+green_width_ft = green_width_yds * ft_per_pace
+
+# Compute current coordinates
+x_hole = st.session_state.hole_coords["x_ft"]
+y_hole = st.session_state.hole_coords["y_ft"]
+x_ball = st.session_state.ball_coords["x_ft"]
+y_ball = st.session_state.ball_coords["y_ft"]
+
+straight_dist_ft = np.sqrt((x_hole - x_ball)**2 + (y_hole - y_ball)**2)
+straight_paces = straight_dist_ft / ft_per_pace
+
+slope_drop = 0.0
+interactive_display_img = None
+
+if base_img_path:
+    try:
+        raw_img = Image.open(base_img_path).convert("RGB")
+        img_w, img_h = raw_img.size
         
-    # Ball Coordinates (Orientation Relative to Hole)
-    dist_ft = ball_offset_paces * ft_per_pace
-    if ball_direction.lower() == 'right':
-        x_ball, y_ball = x_hole + dist_ft, y_hole
-    elif ball_direction.lower() == 'left':
-        x_ball, y_ball = x_hole - dist_ft, y_hole
-    elif ball_direction.lower() == 'front':
-        x_ball, y_ball = x_hole, y_hole - dist_ft
-    elif ball_direction.lower() == 'back':
-        x_ball, y_ball = x_hole, y_hole + dist_ft
-    else:
-        x_ball, y_ball = x_hole + dist_ft, y_hole
+        box_x_min, box_x_max = img_w * 0.22, img_w * 0.78
+        box_y_bottom = img_h * 0.88
+        box_height = max_depth_yds * ((img_h * 0.76) / 28.0)
+        
+        def ft_to_pixels(x_ft, y_ft):
+            max_depth_ft = max_depth_yds * ft_per_pace
+            px = box_x_min + (x_ft / green_width_ft) * (box_x_max - box_x_min)
+            py = box_y_bottom - (y_ft / max_depth_ft) * box_height
+            return int(max(0, min(px, img_w - 1))), int(max(0, min(py, img_h - 1)))
 
-    straight_dist_ft = np.sqrt((x_hole - x_ball)**2 + (y_hole - y_ball)**2)
-    straight_paces = straight_dist_ft / ft_per_pace
+        def pixels_to_ft(px, py):
+            max_depth_ft = max_depth_yds * ft_per_pace
+            x_ft = ((px - box_x_min) / (box_x_max - box_x_min)) * green_width_ft
+            y_ft = ((box_y_bottom - py) / box_height) * max_depth_ft
+            return max(0.0, min(x_ft, green_width_ft)), max(0.0, min(y_ft, max_depth_ft))
 
-    slope_drop = 0.0
-    annotated_img = None
-    
-    if heat_path:
-        try:
-            heat_img = Image.open(heat_path).convert("RGB")
-            img_w, img_h = heat_img.size
-            
-            box_x_min, box_x_max = img_w * 0.22, img_w * 0.78
-            box_y_bottom = img_h * 0.88
-            box_height = max_depth_yds * ((img_h * 0.76) / 28.0)
-            
-            def ft_to_pixels(x_ft, y_ft):
-                max_depth_ft = max_depth_yds * ft_per_pace
-                px = box_x_min + (x_ft / green_width_ft) * (box_x_max - box_x_min)
-                py = box_y_bottom - (y_ft / max_depth_ft) * box_height
-                return int(max(0, min(px, img_w - 1))), int(max(0, min(py, img_h - 1)))
-                
-            bx_px, by_px = ft_to_pixels(x_ball, y_ball)
-            hx_px, hy_px = ft_to_pixels(x_hole, y_hole)
-            
-            mid_x_px = int((bx_px + hx_px) / 2)
-            mid_y_px = int((by_px + hy_px) / 2)
+        # Vision engine gradient sampling
+        if heat_path:
+            mid_x_px = int((ft_to_pixels(x_ball, y_ball)[0] + ft_to_pixels(x_hole, y_hole)[0]) / 2)
+            mid_y_px = int((ft_to_pixels(x_ball, y_ball)[1] + ft_to_pixels(x_hole, y_hole)[1]) / 2)
             sample_offset = int(max(5, (box_x_max - box_x_min) * 0.05))
             
             left_px = (max(0, mid_x_px - sample_offset), mid_y_px)
             right_px = (min(img_w - 1, mid_x_px + sample_offset), mid_y_px)
             
-            left_rgb = heat_img.getpixel(left_px)
-            right_rgb = heat_img.getpixel(right_px)
+            left_rgb = raw_img.getpixel(left_px)
+            right_rgb = raw_img.getpixel(right_px)
             
             left_elev = left_rgb[0] - left_rgb[2]
             right_elev = right_rgb[0] - right_rgb[2]
@@ -177,107 +159,141 @@ if st.button("Calculate Putt Solution", type="primary"):
             lateral_break = (right_elev - left_elev) / 50.0
             gradient_multiplier = 1.5 if "Double" in slope_steepness else 1.0
             slope_drop = lateral_break * gradient_multiplier
-            
-        except Exception as e:
-            st.warning(f"Vision engine parsing error: {e}")
-            slope_drop = 0.04 * (x_hole - x_ball)
 
-    if slope_drop == 0.0:
-        gradient_multiplier = 1.5 if "Double" in slope_steepness else 1.0
-        slope_drop = ((0.03 * x_hole - 0.02 * y_hole) - (0.03 * x_ball - 0.02 * y_hole)) * gradient_multiplier
+        if slope_drop == 0.0:
+            gradient_multiplier = 1.5 if "Double" in slope_steepness else 1.0
+            slope_drop = ((0.03 * x_hole - 0.02 * y_hole) - (0.03 * x_ball - 0.02 * y_hole)) * gradient_multiplier
 
-    # Aim & Target Calculations
-    aim_offset_ft = slope_drop * calibrated_stimp * 0.25 * (straight_dist_ft / 10.0)
-    aim_side = "Left" if slope_drop < 0 else "Right"
-    aim_ft_val = abs(aim_offset_ft)
-    aim_paces_val = aim_ft_val / ft_per_pace
-    
-    # Speed Recommendation
-    elevation_speed_adj = abs(slope_drop) * 0.3
-    recommended_speed_paces = straight_paces * (8.0 / calibrated_stimp) + elevation_speed_adj + 0.3
-    recommended_speed_paces = max(1.0, round(recommended_speed_paces, 1))
+        aim_offset_ft = slope_drop * calibrated_stimp * 0.25 * (straight_dist_ft / 10.0)
+        aim_side = "Left" if slope_drop < 0 else "Right"
+        aim_ft_val = abs(aim_offset_ft)
+        aim_paces_val = aim_ft_val / ft_per_pace
 
-    # --- DRAW OVERLAY ON HEAT MAP ---
-    base_img_path = heat_path if heat_path else contour_path
-    if base_img_path:
-        try:
-            annotated_img = Image.open(base_img_path).convert("RGB")
-            draw = ImageDraw.Draw(annotated_img)
-            
-            img_w, img_h = annotated_img.size
-            box_x_min, box_x_max = img_w * 0.22, img_w * 0.78
-            box_y_bottom = img_h * 0.88
-            box_height = max_depth_yds * ((img_h * 0.76) / 28.0)
-            
-            def ft_to_pixels(x_ft, y_ft):
-                max_depth_ft = max_depth_yds * ft_per_pace
-                px = box_x_min + (x_ft / green_width_ft) * (box_x_max - box_x_min)
-                py = box_y_bottom - (y_ft / max_depth_ft) * box_height
-                return int(max(0, min(px, img_w - 1))), int(max(0, min(py, img_h - 1)))
-                
-            bx_px, by_px = ft_to_pixels(x_ball, y_ball)
-            hx_px, hy_px = ft_to_pixels(x_hole, y_hole)
-            
-            # --- ABEAM TARGET POINT CALCULATION ---
-            # Position the cyan target abeam with the hole (same Y coordinate as the hole),
-            # offset horizontally by the aim distance in the direction of the break.
-            target_x_ft = x_hole + aim_offset_ft
-            target_y_ft = y_hole  # Exactly abeam with the hole vertically
-            tx_px, ty_px = ft_to_pixels(target_x_ft, target_y_ft)
+        elevation_speed_adj = abs(slope_drop) * 0.3
+        recommended_speed_paces = straight_paces * (8.0 / calibrated_stimp) + elevation_speed_adj + 0.3
+        recommended_speed_paces = max(1.0, round(recommended_speed_paces, 1))
 
-            # --- SMOOTH ARC PATH FROM BALL -> TARGET -> HOLE (OR DIRECT CURVE) ---
-            mid_x = (bx_px + hx_px) / 2
-            mid_y = (by_px + hy_px) / 2
-            
-            dx_line = hx_px - bx_px
-            dy_line = hy_px - by_px
-            line_len = np.sqrt(dx_line**2 + dy_line**2)
-            
-            if line_len > 0:
-                nx = -dy_line / line_len
-                ny = dx_line / line_len
-                break_shift = slope_drop * calibrated_stimp * 1.5
-                control_x = mid_x + nx * break_shift
-                control_y = mid_y + ny * break_shift
-            else:
-                control_x, control_y = mid_x, mid_y
-                
-            curve_points = []
-            for t in np.linspace(0, 1, 50):
-                px = (1 - t)**2 * bx_px + 2 * (1 - t) * t * control_x + t**2 * hx_px
-                py = (1 - t)**2 * by_px + 2 * (1 - t) * t * control_y + t**2 * hy_px
-                curve_points.append((px, py))
-                
-            for i in range(len(curve_points) - 1):
-                if i % 2 == 0:
-                    draw.line([curve_points[i], curve_points[i+1]], fill="yellow", width=4)
-            
-            # Draw Clean Markers (Radius = 5px)
-            dot_r = 5
-            draw.ellipse([bx_px - dot_r, by_px - dot_r, bx_px + dot_r, by_px + dot_r], fill="blue", outline="white", width=1)
-            draw.ellipse([hx_px - dot_r, hy_px - dot_r, hx_px + dot_r, hy_px + dot_r], fill="red", outline="white", width=1)
-            draw.ellipse([tx_px - (dot_r-1), ty_px - (dot_r-1), tx_px + (dot_r-1), ty_px + (dot_r-1)], fill="cyan", outline="black", width=1)
-            
-        except Exception as e:
-            st.warning(f"Overlay drawing error: {e}")
-
-    # --- OUTPUTS & VISUAL PROOF WITH LEGEND ---
-    st.success("Target Solution Readout:")
-    st.markdown(f"### 🎯 **Putt Distance:** {format_feet_inches(straight_dist_ft)} ({straight_paces:.1f} paces)")
-    st.markdown(f"### ➡ **Aim Point:** {format_feet_inches(aim_ft_val)} ({aim_paces_val:.1f} paces) {aim_side}")
-    st.markdown(f"### ⚡ **Stroke Speed:** Putt with **{recommended_speed_paces}-pace** power stroke")
-    
-    if annotated_img:
-        st.subheader("🔍 Visual Putt Solution Overlay")
-        st.image(annotated_img, use_container_width=True)
+        # Draw overlays
+        draw_img = raw_img.copy()
+        draw = ImageDraw.Draw(draw_img)
         
-        st.markdown(
-            """
-            | Marker / Line | Description |
-            | :--- | :--- |
-            | 🔵 **Blue Dot** | Ball Position |
-            | 🔴 **Red Dot** | Hole (Cup) |
-            | 🩵 **Cyan Dot** | Target Aim Point Abeam with Hole |
-            | 🟡 **Yellow Dashed Line** | Anticipated Break Path |
-            """
-        )
+        bx_px, by_px = ft_to_pixels(x_ball, y_ball)
+        hx_px, hy_px = ft_to_pixels(x_hole, y_hole)
+        
+        target_x_ft = x_hole + aim_offset_ft
+        target_y_ft = y_hole
+        tx_px, ty_px = ft_to_pixels(target_x_ft, target_y_ft)
+
+        dx_line = hx_px - bx_px
+        dy_line = hy_px - by_px
+        line_len = np.sqrt(dx_line**2 + dy_line**2)
+        
+        mid_x = (bx_px + hx_px) / 2
+        mid_y = (by_px + hy_px) / 2
+        
+        if line_len > 0:
+            nx = -dy_line / line_len
+            ny = dx_line / line_len
+            break_shift = slope_drop * calibrated_stimp * 1.5
+            control_x = mid_x + nx * break_shift
+            control_y = mid_y + ny * break_shift
+        else:
+            control_x, control_y = mid_x, mid_y
+            
+        curve_points = []
+        for t in np.linspace(0, 1, 50):
+            px = (1 - t)**2 * bx_px + 2 * (1 - t) * t * control_x + t**2 * hx_px
+            py = (1 - t)**2 * by_px + 2 * (1 - t) * t * control_y + t**2 * hy_px
+            curve_points.append((px, py))
+            
+        for i in range(len(curve_points) - 1):
+            if i % 2 == 0:
+                draw.line([curve_points[i], curve_points[i+1]], fill="yellow", width=4)
+        
+        dot_r = 6
+        draw.ellipse([bx_px - dot_r, by_px - dot_r, bx_px + dot_r, by_px + dot_r], fill="blue", outline="white", width=2)
+        draw.ellipse([hx_px - dot_r, hy_px - dot_r, hx_px + dot_r, hy_px + dot_r], fill="red", outline="white", width=2)
+        draw.ellipse([tx_px - (dot_r-1), ty_px - (dot_r-1), tx_px + (dot_r-1), ty_px + (dot_r-1)], fill="cyan", outline="black", width=2)
+        
+        interactive_display_img = draw_img
+
+    except Exception as e:
+        st.warning(f"Error rendering map: {e}")
+
+with col_map:
+    st.subheader("🗺️ Click Map to Position Markers")
+    st.caption("Select your placement mode on the left, then click directly on the green below:")
+    
+    if interactive_display_img:
+        clicked = streamlit_image_coordinates(interactive_display_img, key="map_click")
+        
+        if clicked is not None:
+            clicked_x = clicked["x"]
+            clicked_y = clicked["y"]
+            
+            clicked_x_ft, clicked_y_ft = pixels_to_ft(clicked_x, clicked_y)
+            
+            if "Hole" in placement_mode:
+                st.session_state.hole_coords = {"x_ft": clicked_x_ft, "y_ft": clicked_y_ft}
+            else:
+                st.session_state.ball_coords = {"x_ft": clicked_x_ft, "y_ft": clicked_y_ft}
+            st.rerun()
+    else:
+        st.info("Map assets not found for this hole.")
+
+# --- REVERSE-LOOKUP COORDINATE REPORT PANEL ---
+st.markdown("---")
+st.subheader("📍 Reverse-Lookup Placement Metrics")
+
+# Compute relative yard/pace locations from green layout boundaries
+hole_front_paces = y_hole / ft_per_pace
+hole_side_val = x_hole / ft_per_pace
+hole_side_ref = "Left" if hole_side_val <= (green_width_yds * 1.5) else "Right"
+if hole_side_ref == "Right":
+    hole_side_val = (green_width_ft - x_hole) / ft_per_pace
+
+ball_front_paces = y_ball / ft_per_pace
+ball_side_val = x_ball / ft_per_pace
+ball_side_ref = "Left" if ball_side_val <= (green_width_yds * 1.5) else "Right"
+if ball_side_ref == "Right":
+    ball_side_val = (green_width_ft - x_ball) / ft_per_pace
+
+rc1, rc2 = st.columns(2)
+with rc1:
+    st.markdown(
+        f"""
+        **🔴 Hole Position Breakdown:**
+        * **From Front:** {hole_front_paces:.1f} paces
+        * **From Side:** {hole_side_val:.1f} paces ({hole_side_ref})
+        """
+    )
+with rc2:
+    st.markdown(
+        f"""
+        **🔵 Ball Position Breakdown:**
+        * **Distance to Hole:** {straight_paces:.1f} paces
+        * **Relative Placement:** Y: {ball_front_paces:.1f} paces from front, X: {ball_side_val:.1f} paces ({ball_side_ref})
+        """
+    )
+
+# --- OUTPUTS & SOLUTION READOUT ---
+st.markdown("---")
+st.success("Target Solution Readout:")
+r_col1, r_col2, r_col3 = st.columns(3)
+with r_col1:
+    st.markdown(f"### 🎯 **Distance:** {format_feet_inches(straight_dist_ft)} ({straight_paces:.1f} paces)")
+with r_col2:
+    st.markdown(f"### ➡ **Aim Point:** {format_feet_inches(aim_ft_val)} ({aim_paces_val:.1f} paces) {aim_side}")
+with r_col3:
+    st.markdown(f"### ⚡ **Stroke Speed:** {recommended_speed_paces}-pace power")
+
+st.markdown(
+    """
+    | Marker / Line | Description |
+    | :--- | :--- |
+    | 🔵 **Blue Dot** | Ball Position (Click mode to reposition) |
+    | 🔴 **Red Dot** | Hole / Cup Position (Click mode to reposition) |
+    | 🩵 **Cyan Dot** | Target Aim Point Abeam with Hole |
+    | 🟡 **Yellow Dashed Line** | Anticipated Break Path |
+    """
+)
