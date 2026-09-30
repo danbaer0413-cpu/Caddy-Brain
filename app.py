@@ -69,7 +69,6 @@ with col_inputs:
     with col_d2:
         green_width_yds = st.number_input("Width (Yds)", min_value=0.0, max_value=100.0, value=float(saved_width), step=1.0)
 
-    # Auto-save changes to session database
     st.session_state.courses_db[selected_course][selected_hole]["max_depth_yds"] = max_depth_yds
     st.session_state.courses_db[selected_course][selected_hole]["width_yds"] = green_width_yds
 
@@ -90,7 +89,6 @@ with col_maps:
     
     course_folder = selected_course.lower().replace(" ", "_").replace("(", "").replace(")", "")
     
-    # Locate Heat Map file
     heat_path = None
     for filename in [f"{selected_hole}_Heat.png", f"{selected_hole}_heat.png", f"{selected_hole}_Heat.PNG", f"{selected_hole}_heat.PNG"]:
         path = f"assets/{course_folder}/{filename}"
@@ -98,7 +96,6 @@ with col_maps:
             heat_path = path
             break
 
-    # Locate Contour Map file
     contour_path = None
     for filename in [f"{selected_hole}_Contour.JPG", f"{selected_hole}_contour.JPG", f"{selected_hole}_Contour.jpg", f"{selected_hole}_contour.jpg", f"{selected_hole}_Contour.jpeg", f"{selected_hole}_Contour.JPEG"]:
         path = f"assets/{course_folder}/{filename}"
@@ -118,7 +115,7 @@ with col_maps:
         else:
             st.info(f"Missing Contour Map for Hole {selected_hole}")
 
-# --- VISION & CALCULATION ENGINE (READS HEAT MAP PIXELS & DRAWS OVERLAYS) ---
+# --- DUAL-MAP VISION ENGINE (CONTOUR BOUNDARY + HEAT ELEVATION) ---
 if st.button("Calculate Putt Solution", type="primary"):
     ft_per_pace = 3.0
     green_width_ft = green_width_yds * ft_per_pace
@@ -146,27 +143,49 @@ if st.button("Calculate Putt Solution", type="primary"):
     slope_drop = 0.0
     annotated_img = None
     
-    # IMAGE-PIXEL EXTRACTION & VISUAL OVERLAY
-    if heat_path:
+    # DUAL IMAGE PROCESSING
+    if heat_path and contour_path:
         try:
-            img = Image.open(heat_path).convert("RGB")
-            img_w, img_h = img.size
+            heat_img = Image.open(heat_path).convert("RGB")
+            contour_img = Image.open(contour_path).convert("RGB")
+            img_w, img_h = heat_img.size
             max_depth_ft = max_depth_yds * ft_per_pace
             
+            # --- AUTOMATED GREEN BOUNDARY DETECTION FROM CONTOUR MAP ---
+            # We convert the contour map to grayscale to locate the dark outline boundaries of the green
+            gray_contour = contour_img.convert("L")
+            arr_contour = np.array(gray_contour)
+            
+            # Find pixel rows and columns where the green boundary lines/content exist (non-white areas)
+            # Threshold to find non-background pixels (assuming white background > 240)
+            green_mask = arr_contour < 245
+            y_indices, x_indices = np.where(green_mask)
+            
+            if len(x_indices) > 0 and len(y_indices) > 0:
+                box_x_min, box_x_max = float(x_indices.min()), float(x_indices.max())
+                box_y_min, box_y_max = float(y_indices.min()), float(y_indices.max())
+            else:
+                # Fallback box if empty
+                box_x_min, box_x_max = img_w * 0.22, img_w * 0.78
+                box_y_min, box_y_max = img_h * 0.12, img_h * 0.88
+                
+            box_width = box_x_max - box_x_min
+            box_height = box_y_max - box_y_min
+            
             def ft_to_pixels(x_ft, y_ft):
-                px = int((x_ft / green_width_ft) * img_w)
-                py = int(img_h - (y_ft / max_depth_ft) * img_h)
-                return max(0, min(px, img_w - 1)), max(0, min(py, img_h - 1))
+                px = box_x_min + (x_ft / green_width_ft) * box_width
+                py = box_y_max - (y_ft / max_depth_ft) * box_height
+                return int(max(0, min(px, img_w - 1))), int(max(0, min(py, img_h - 1)))
                 
             bx_px, by_px = ft_to_pixels(x_ball, y_ball)
             hx_px, hy_px = ft_to_pixels(x_hole, y_hole)
             
-            # Sample pixel colors (RGB)
-            b_rgb = img.getpixel((bx_px, by_px))
-            h_rgb = img.getpixel((hx_px, hy_px))
+            # Sample heat map colors for elevation/slope
+            b_rgb = heat_img.getpixel((bx_px, by_px))
+            h_rgb = heat_img.getpixel((hx_px, hy_px))
             
-            ball_elevation_score = b_rgb[0] - b_rgb[2]  # Red minus Blue
-            hole_elevation_score = h_rgb[0] - h_rgb[2]  # Red minus Blue
+            ball_elevation_score = b_rgb[0] - b_rgb[2]  
+            hole_elevation_score = h_rgb[0] - h_rgb[2]  
             
             elevation_diff = (hole_elevation_score - ball_elevation_score) / 50.0
             side_color_shift = (b_rgb[0] - b_rgb[1]) - (h_rgb[0] - h_rgb[1])
@@ -174,21 +193,46 @@ if st.button("Calculate Putt Solution", type="primary"):
             gradient_multiplier = 2.0 if "Double" in slope_steepness else 1.0
             slope_drop = (elevation_diff + (side_color_shift / 100.0) * (x_hole - x_ball) / green_width_ft) * gradient_multiplier
             
-            # --- DRAW VISUAL PROOF OVERLAY ON A COPY OF THE IMAGE ---
-            annotated_img = img.copy()
+            # --- DRAW OVERLAY ON HEAT MAP FOR PROOF ---
+            annotated_img = heat_img.copy()
             draw = ImageDraw.Draw(annotated_img)
             
-            # Draw line connecting ball to hole (Yellow line)
-            draw.line([(bx_px, by_px), (hx_px, hy_px)], fill="yellow", width=4)
-            
-            # Draw marker for Ball (Blue circle)
-            draw.ellipse([bx_px - 8, by_px - 8, bx_px + 8, by_px + 8], fill="blue", outline="white", width=2)
-            
-            # Draw marker for Hole (Black/Red target circle)
-            draw.ellipse([hx_px - 8, hy_px - 8, hx_px + 8, hy_px + 8], fill="red", outline="white", width=2)
+            draw.line([(bx_px, by_px), (hx_px, hy_px)], fill="yellow", width=6)
+            draw.ellipse([bx_px - 12, by_px - 12, bx_px + 12, by_px + 12], fill="blue", outline="white", width=3)
+            draw.ellipse([hx_px - 12, hy_px - 12, hx_px + 12, hy_px + 12], fill="red", outline="white", width=3)
             
         except Exception as e:
-            st.warning(f"Vision analysis fallback triggered: {e}")
+            st.warning(f"Dual-map vision parsing error: {e}")
+            slope_drop = 0.05 * (x_hole - x_ball)
+    elif heat_path:
+        # Fallback if contour is missing
+        try:
+            img = Image.open(heat_path).convert("RGB")
+            img_w, img_h = img.size
+            max_depth_ft = max_depth_yds * ft_per_pace
+            box_x_min, box_x_max = img_w * 0.22, img_w * 0.78
+            box_y_min, box_y_max = img_h * 0.12, img_h * 0.88
+            box_width = box_x_max - box_x_min
+            box_height = box_y_max - box_y_min
+            
+            def ft_to_pixels(x_ft, y_ft):
+                px = box_x_min + (x_ft / green_width_ft) * box_width
+                py = box_y_max - (y_ft / max_depth_ft) * box_height
+                return int(max(0, min(px, img_w - 1))), int(max(0, min(py, img_h - 1)))
+                
+            bx_px, by_px = ft_to_pixels(x_ball, y_ball)
+            hx_px, hy_px = ft_to_pixels(x_hole, y_hole)
+            b_rgb = img.getpixel((bx_px, by_px))
+            h_rgb = img.getpixel((hx_px, hy_px))
+            elevation_diff = ((h_rgb[0] - h_rgb[2]) - (b_rgb[0] - b_rgb[2])) / 50.0
+            slope_drop = elevation_diff
+            
+            annotated_img = img.copy()
+            draw = ImageDraw.Draw(annotated_img)
+            draw.line([(bx_px, by_px), (hx_px, hy_px)], fill="yellow", width=6)
+            draw.ellipse([bx_px - 12, by_px - 12, bx_px + 12, by_px + 12], fill="blue", outline="white", width=3)
+            draw.ellipse([hx_px - 12, by_px - 12, hx_px + 12, hy_px + 12], fill="red", outline="white", width=3)
+        except Exception:
             slope_drop = 0.05 * (x_hole - x_ball)
 
     if slope_drop == 0.0:
@@ -206,12 +250,12 @@ if st.button("Calculate Putt Solution", type="primary"):
     recommended_speed_paces = straight_paces * (8.0 / calibrated_stimp) + elevation_speed_adj + 0.3
     recommended_speed_paces = max(1.0, round(recommended_speed_paces, 1))
 
-    # --- CLEAN, PUNCHY OUTPUTS & VISUAL PROOF ---
-    st.success("Target Solution Readout (Parsed from Heat Map):")
+    # --- OUTPUTS & VISUAL PROOF ---
+    st.success("Target Solution Readout (Dual-Map Parsed):")
     st.markdown(f"### 🎯 **Putt Distance:** {format_feet_inches(straight_dist_ft)} ({straight_paces:.1f} paces)")
-    st.markdown(f"### ➡️ **Aim Point:** {format_feet_inches(aim_ft_val)} ({aim_paces_val:.1f} paces) {aim_side}")
+    st.markdown(f"### ➡️️ **Aim Point:** {format_feet_inches(aim_ft_val)} ({aim_paces_val:.1f} paces) {aim_side}")
     st.markdown(f"### ⚡ **Stroke Speed:** Putt with **{recommended_speed_paces}-pace** power stroke")
     
     if annotated_img:
-        st.subheader("🔍 Vision Engine Target Overlay Proof")
-        st.image(annotated_img, caption="Blue Dot = Ball | Red Dot = Hole | Yellow Line = Putt Path Sample Vector", use_container_width=True)
+        st.subheader("🔍 Dual-Map Vision Engine Overlay Proof")
+        st.image(annotated_img, caption="Contour Map used for Green Boundaries | Heat Map sampled for Slope Elevation", use_container_width=True)
