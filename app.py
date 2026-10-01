@@ -4,7 +4,9 @@ import os
 from PIL import Image, ImageDraw
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-# --- 1. SESSION STATE INITIALIZATION ---
+# --- 1. CONFIG & SESSION STATE ---
+st.set_page_config(page_title="CaddyBrain Green Reader", page_icon="⛳", layout="wide")
+
 if "courses_db" not in st.session_state:
     st.session_state.courses_db = {
         "Mercer Oaks East": {
@@ -12,13 +14,13 @@ if "courses_db" not in st.session_state:
         }
     }
 
-if "ball_coords" not in st.session_state or not isinstance(st.session_state.ball_coords, dict) or "x_ft" not in st.session_state.ball_coords:
-    st.session_state.ball_coords = {"x_ft": 12.0, "y_ft": 4.0}
+if "ball_coords" not in st.session_state or not isinstance(st.session_state.ball_coords, dict):
+    st.session_state.ball_coords = {"x_ft": 7.0, "y_ft": 4.0}
 
-if "hole_coords" not in st.session_state or not isinstance(st.session_state.hole_coords, dict) or "x_ft" not in st.session_state.hole_coords:
-    st.session_state.hole_coords = {"x_ft": 7.0, "y_ft": 36.0}
+if "hole_coords" not in st.session_state or not isinstance(st.session_state.hole_coords, dict):
+    st.session_state.hole_coords = {"x_ft": 7.0, "y_ft": 30.0}
 
-# --- 2. FORMATTER UTILITY ---
+# --- 2. FORMATTER & ENGINE ---
 def format_feet_inches(total_feet):
     negative = total_feet < 0
     total_feet = abs(total_feet)
@@ -28,13 +30,12 @@ def format_feet_inches(total_feet):
         ft += 1
         inches = 0
     if ft == 0 and inches == 0:
-        return "Straight (0 in)"
+        return "0 in"
     elif ft == 0:
         return f"{inches} in"
     result_str = f"{ft} ft {inches} in"
     return f"-{result_str}" if negative else result_str
 
-# --- 3. CORE DETERMINATION ENGINE ---
 def calculate_putt_solution(x_ball, y_ball, x_hole, y_hole, max_depth_yds, green_width_ft, calibrated_stimp, raw_img, contour_img, slope_steepness):
     img_w, img_h = raw_img.size
     box_x_min, box_x_max = img_w * 0.22, img_w * 0.78
@@ -59,7 +60,6 @@ def calculate_putt_solution(x_ball, y_ball, x_hole, y_hole, max_depth_yds, green
     bx_px, by_px = ft_to_pixels(x_ball, y_ball)
     hx_px, hy_px = ft_to_pixels(x_hole, y_hole)
     
-    # Multi-Point Path Sampling Engine
     sample_breaks = []
     sample_offset = int(max(4, (box_x_max - box_x_min) * 0.04))
     gradient_multiplier = 1.3 if "Double" in slope_steepness else 0.9
@@ -73,9 +73,7 @@ def calculate_putt_solution(x_ball, y_ball, x_hole, y_hole, max_depth_yds, green
         
         h_left = raw_img.getpixel(left_p)
         h_right = raw_img.getpixel(right_p)
-        h_left_elev = int(h_left[0]) - int(h_left[2])
-        h_right_elev = int(h_right[0]) - int(h_right[2])
-        heat_lateral = (h_right_elev - h_left_elev) / 60.0
+        heat_lateral = (int(h_right[0]) - int(h_right[2]) - (int(h_left[0]) - int(h_left[2]))) / 60.0
         
         if contour_img:
             c_left = contour_img.getpixel(left_p)
@@ -97,7 +95,7 @@ def calculate_putt_solution(x_ball, y_ball, x_hole, y_hole, max_depth_yds, green
     recommended_speed_paces = straight_paces * (8.0 / calibrated_stimp) + elevation_speed_adj + 0.2
     recommended_speed_paces = max(1.0, round(recommended_speed_paces, 1))
 
-    # Construct visual overlay trajectory (Quadratic Bezier curve)
+    # Draw overlays on image
     draw_img = raw_img.copy()
     draw = ImageDraw.Draw(draw_img)
     
@@ -130,11 +128,9 @@ def calculate_putt_solution(x_ball, y_ball, x_hole, y_hole, max_depth_yds, green
     draw.ellipse([hx_px - dot_r, hy_px - dot_r, hx_px + dot_r, hy_px + dot_r], fill="red", outline="white", width=2)
     draw.ellipse([tx_px - (dot_r-1), ty_px - (dot_r-1), tx_px + (dot_r-1), ty_px + (dot_r-1)], fill="cyan", outline="black", width=2)
     
-    return draw_img, straight_dist_ft, aim_ft_val, aim_side, recommended_speed_paces, pixels_to_ft
+    return draw_img, straight_dist_ft, aim_ft_val, aim_side, recommended_speed_paces, pixels_to_ft, slope_drop
 
-# --- 4. APP LAYOUT & INTERFACE ---
-st.title("⛳ CaddyBrain: Refined Green Reading Assistant")
-
+# --- 3. SIDEBAR SETUP ---
 st.sidebar.header("1. Course & Hole Setup")
 selected_course = st.sidebar.selectbox("Select Course", list(st.session_state.courses_db.keys()))
 selected_hole = st.sidebar.selectbox("Select Hole", list(st.session_state.courses_db[selected_course].keys()))
@@ -148,26 +144,7 @@ actual_test_paces = st.sidebar.number_input("3-Pace Test Roll (paces)", min_valu
 calibrated_stimp = base_stimp * (actual_test_paces / 3.0)
 st.sidebar.info(f"Calibrated Stimp: **{calibrated_stimp:.1f}**")
 
-st.header(f"Hole #{selected_hole} Specifications ({selected_course})")
-col_inputs, col_map = st.columns([1.0, 1.3])
-
-with col_inputs:
-    st.subheader("Green Dimensions")
-    max_depth_yds = st.number_input("Depth (Yds)", min_value=0.0, max_value=100.0, value=float(saved_depth), step=1.0)
-    green_width_yds = st.number_input("Width (Yds)", min_value=0.0, max_value=100.0, value=float(saved_width), step=1.0)
-
-    st.session_state.courses_db[selected_course][selected_hole]["max_depth_yds"] = max_depth_yds
-    st.session_state.courses_db[selected_course][selected_hole]["width_yds"] = green_width_yds
-
-    placement_mode = st.radio("Click Mode:", ["🔴 Hole Position", "🔵 Ball Position"], horizontal=True)
-    slope_steepness = st.selectbox("Contour Gradient", ["Standard Slope (Single Arrow)", "Steep Slope (Double Arrows ⚡)"])
-    
-    if st.button("Reset Markers", type="secondary"):
-        st.session_state.ball_coords = {"x_ft": green_width_yds * 1.5, "y_ft": 10.0}
-        st.session_state.hole_coords = {"x_ft": green_width_yds * 1.5, "y_ft": 30.0}
-        st.rerun()
-
-# Asset path resolution
+# Asset Path Resolver
 course_folder = selected_course.lower().replace(" ", "_").replace("(", "").replace(")", "")
 heat_path, contour_path = None, None
 
@@ -180,65 +157,154 @@ for filename in [f"{selected_hole}_Contour.JPG", f"{selected_hole}_contour.JPG",
     if os.path.exists(path): contour_path = path; break
 
 base_img_path = heat_path if heat_path else contour_path
-interactive_display_img = None
-straight_dist_ft = aim_ft_val = speed_paces = 0.0
+
+# Execute Engine
+straight_dist_ft = aim_ft_val = speed_paces = slope_drop = 0.0
 aim_side = "Right"
+interactive_display_img = contour_display_img = None
 pixels_to_ft_func = None
+max_depth_yds = saved_depth
+green_width_yds = saved_width
 
 if base_img_path:
     try:
         raw_img = Image.open(base_img_path).convert("RGB")
-        contour_img = Image.open(contour_path).convert("RGB") if contour_path else None
+        cont_img = Image.open(contour_path).convert("RGB" ) if contour_path and os.path.exists(contour_path) else None
         
-        # Invoke the core determination engine
-        annotated_img, straight_dist_ft, aim_ft_val, aim_side, speed_paces, pixels_to_ft_func = calculate_putt_solution(
+        annotated_img, straight_dist_ft, aim_ft_val, aim_side, speed_paces, pixels_to_ft_func, slope_drop = calculate_putt_solution(
             x_ball=st.session_state.ball_coords["x_ft"],
             y_ball=st.session_state.ball_coords["y_ft"],
             x_hole=st.session_state.hole_coords["x_ft"],
             y_hole=st.session_state.hole_coords["y_ft"],
-            max_depth_yds=max_depth_yds,
-            green_width_ft=green_width_yds * 3.0,
+            max_depth_yds=saved_depth,
+            green_width_ft=saved_width * 3.0,
             calibrated_stimp=calibrated_stimp,
             raw_img=raw_img,
-            contour_img=contour_img,
-            slope_steepness=slope_steepness
+            contour_img=cont_img,
+            slope_steepness="Standard Slope (Single Arrow)"
         )
         interactive_display_img = annotated_img
+        if cont_img:
+            # Generate contour overlay too
+            cont_annotated, _, _, _, _, _, _ = calculate_putt_solution(
+                x_ball=st.session_state.ball_coords["x_ft"],
+                y_ball=st.session_state.ball_coords["y_ft"],
+                x_hole=st.session_state.hole_coords["x_ft"],
+                y_hole=st.session_state.hole_coords["y_ft"],
+                max_depth_yds=saved_depth,
+                green_width_ft=saved_width * 3.0,
+                calibrated_stimp=calibrated_stimp,
+                raw_img=cont_img,
+                contour_img=None,
+                slope_steepness="Standard Slope (Single Arrow)"
+            )
+            contour_display_img = cont_annotated
     except Exception as e:
-        st.warning(f"Error processing maps: {e}")
+        st.warning(f"Error loading maps: {e}")
 
-with col_map:
-    st.subheader("🗺️ Click Map to Position Markers")
-    if interactive_display_img and pixels_to_ft_func:
-        clicked = streamlit_image_coordinates(interactive_display_img, key="map_click")
-        if clicked is not None:
-            clicked_x_ft, clicked_y_ft = pixels_to_ft_func(clicked["x"], clicked["y"])
-            if "Hole" in placement_mode:
-                st.session_state.hole_coords = {"x_ft": clicked_x_ft, "y_ft": clicked_y_ft}
-            else:
-                st.session_state.ball_coords = {"x_ft": clicked_x_ft, "y_ft": clicked_y_ft}
+# --- 4. MAIN INTERFACE TABS ---
+st.title(f"⛳ Hole #{selected_hole} ({selected_course})")
+
+tab_dashboard, tab_maps = st.tabs(["📊 Trajectory & Metrics Dashboard", "🗺️ Dual-Map Green Inspector"])
+
+with tab_dashboard:
+    # Top Stat Cards
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        aim_str = f"{format_feet_inches(aim_ft_val)} {aim_side}" if aim_ft_val > 0 else "Straight (0 in)"
+        cup_widths = round(aim_ft_val / 0.25, 1)
+        st.metric(label="🎯 Aim Offset", value=aim_str, delta=f"~{cup_widths} cup widths {aim_side.lower()}")
+    with c2:
+        stroke_feel_ft = round(straight_dist_ft * (calibrated_stimp / 8.0), 1)
+        st.metric(label="⚡ Stroke Feel Distance", value=f"{stroke_feel_ft} ft", delta=f"~{speed_paces} paces power")
+    with c3:
+        break_severity = "Severe break" if abs(slope_drop) > 1.0 else "Moderate break severity"
+        st.metric(label="📈 Effective Break Factor", value=f"{1.0 + abs(slope_drop):.2f}x", delta=break_severity)
+
+    st.markdown("---")
+    st.subheader("Top-Down Trajectory Visualizer *(Aim Line vs True Curve)*")
+    
+    # Custom standalone matplotlib/streamlit grid chart mirroring your reference graphic
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=(8, 5))
+    
+    # Draw grid lines
+    ax.set_xticks(np.arange(0, 15, 1))
+    ax.set_yticks(np.arange(0, 50, 5))
+    ax.grid(True, linestyle="--", alpha=0.5, color="#dcdcdc")
+    
+    # Plot start and target points
+    bx, by = st.session_state.ball_coords["x_ft"], st.session_state.ball_coords["y_ft"]
+    hx, hy = st.session_state.hole_coords["x_ft"], st.session_state.hole_coords["y_ft"]
+    aim_x = hx - aim_ft_val if aim_side == "Left" else hx + aim_ft_val
+    
+    # Straight Aim Line
+    ax.plot([bx, aim_x], [by, hy], color="#2b5c8f", linewidth=2, label="Aim Line")
+    ax.scatter([aim_x], [hy], color="#2b5c8f", s=50, zorder=5)
+    ax.text(aim_x - 1.5, hy + 1, f"Aim ({format_feet_inches(aim_ft_val)})", color="#2b5c8f", fontweight="bold")
+    
+    # True Curve Path
+    t_vals = np.linspace(0, 1, 50)
+    curve_x = (1 - t_vals)**2 * bx + 2 * (1 - t_vals) * t_vals * ((bx + hx)/2 - slope_drop*2) + t_vals**2 * hx
+    curve_y = (1 - t_vals)**2 * by + 2 * (1 - t_vals) * t_vals * (by + hy)/2 + t_vals**2 * hy
+    ax.plot(curve_x, curve_y, color="#2e7d32", linewidth=3, label="True Curve")
+    
+    # Reference Line (Center Pin)
+    ax.plot([hx, hx], [by, hy], color="gray", linestyle=":", linewidth=1.5)
+    
+    # Markers
+    ax.scatter([bx], [by], color="black", s=70, zorder=6)
+    ax.scatter([hx], [hy], color="black", s=70, zorder=6)
+    
+    ax.set_xlim(-2, green_width_yds * 3.0 + 2)
+    ax.set_ylim(min(by, hy) - 3, max(by, hy) + 5)
+    ax.set_facecolor("#fafafa")
+    fig.patch.set_facecolor("white")
+    
+    st.pyplot(fig)
+    st.caption(f"Calculated for a {round(straight_dist_ft, 1)} ft putt with Stimp {calibrated_stimp:.1f}.")
+
+with tab_maps:
+    col_ctrl, col_heat, col_cont = columns_map = st.columns([1, 1.2, 1.2])
+    
+    with col_ctrl:
+        st.subheader("Marker Controls")
+        placement_mode = st.radio("Click Mode:", ["🔴 Hole Position", "🔵 Ball Position"], key="map_click_mode")
+        slope_steepness = st.selectbox("Contour Gradient", ["Standard Slope (Single Arrow)", "Steep Slope (Double Arrows ⚡)"])
+        
+        if st.button("Reset Markers to Default", type="secondary"):
+            st.session_state.ball_coords = {"x_ft": green_width_yds * 1.5, "y_ft": 4.0}
+            st.session_state.hole_coords = {"x_ft": green_width_yds * 1.5, "y_ft": 30.0}
             st.rerun()
-    else:
-        st.info("Map assets not found.")
+            
+        st.markdown("---")
+        st.markdown(f"**Current Ball:** `X: {st.session_state.ball_coords['x_ft']:.1f}ft, Y: {st.session_state.ball_coords['y_ft']:.1f}ft`")
+        st.markdown(f"**Current Hole:** `X: {st.session_state.hole_coords['x_ft']:.1f}ft, Y: {st.session_state.hole_coords['y_ft']:.1f}ft`")
 
-# --- 5. SOLUTION READOUT ---
-st.markdown("---")
-st.success("Refined Target Solution Readout:")
-r1, r2, r3 = st.columns(3)
-with r1:
-    st.markdown(f"### 🎯 **Distance:** {format_feet_inches(straight_dist_ft)}")
-with r2:
-    st.markdown(f"### ➡ **Aim Point:** {format_feet_inches(aim_ft_val)} {aim_side}")
-with r3:
-    st.markdown(f"### ⚡ **Stroke Speed:** {speed_paces}-pace power")
+    with col_heat:
+        st.subheader("🔥 Heat Map Overlay")
+        if interactive_display_img and pixels_to_ft_func:
+            clicked_heat = streamlit_image_coordinates(interactive_display_img, key="heat_map_click")
+            if clicked_heat is not None:
+                cx, cy = pixels_to_ft_func(clicked_heat["x"], clicked_heat["y"])
+                if "Hole" in placement_mode:
+                    st.session_state.hole_coords = {"x_ft": cx, "y_ft": cy}
+                else:
+                    st.session_state.ball_coords = {"x_ft": cx, "y_ft": cy}
+                st.rerun()
+        else:
+            st.info("Heat map asset not found.")
 
-st.markdown(
-    """
-    | Marker / Line | Description |
-    | :--- | :--- |
-    | 🔵 **Blue Dot** | Ball Position |
-    | 🔴 **Red Dot** | Hole / Cup Position |
-    | 🩵 **Cyan Dot** | Target Aim Point Abeam with Hole (in Feet & Inches) |
-    | 🟡 **Yellow Dashed Line** | Anticipated Break Path |
-    """
-)
+    with col_cont:
+        st.subheader("🗺️ Contour Map Overlay")
+        if contour_display_img and pixels_to_ft_func:
+            clicked_cont = streamlit_image_coordinates(contour_display_img, key="contour_map_click")
+            if clicked_cont is not None:
+                cx, cy = pixels_to_ft_func(clicked_cont["x"], clicked_cont["y"])
+                if "Hole" in placement_mode:
+                    st.session_state.hole_coords = {"x_ft": cx, "y_ft": cy}
+                else:
+                    st.session_state.ball_coords = {"x_ft": cx, "y_ft": cy}
+                st.rerun()
+        else:
+            st.info("Contour map asset not found in assets folder.")
