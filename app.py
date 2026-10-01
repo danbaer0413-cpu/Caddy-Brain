@@ -6,7 +6,7 @@ from io import BytesIO
 from streamlit_image_coordinates import streamlit_image_coordinates
 import matplotlib.pyplot as plt
 
-# --- 1. CONFIG & SESSION STATE ---
+# --- 1. CONFIG & BULLETPROOF SESSION STATE ---
 st.set_page_config(page_title="CaddyBrain Green Reader", page_icon="⛳", layout="wide")
 
 if "courses_db" not in st.session_state:
@@ -16,6 +16,7 @@ if "courses_db" not in st.session_state:
         }
     }
 
+# Absolute bulletproof initialization before any lookups occur
 if "ball_coords" not in st.session_state or not isinstance(st.session_state.ball_coords, dict) or "x_ft" not in st.session_state.ball_coords:
     st.session_state.ball_coords = {"x_ft": 7.0, "y_ft": 4.0}
 
@@ -198,7 +199,7 @@ if base_img_path:
 # --- 4. MAIN INTERFACE TABS ---
 st.title(f"⛳ Hole #{selected_hole} ({selected_course})")
 
-tab_dashboard, tab_maps = st.tabs(["📊 Trajectory & Metrics Dashboard", "🗺️️ Dual-Map Green Inspector"])
+tab_dashboard, tab_maps = st.tabs(["📊 Trajectory & Metrics Dashboard", "🗺 Dual-Map Green Inspector"])
 
 with tab_dashboard:
     c1, c2, c3 = st.columns(3)
@@ -282,17 +283,13 @@ with tab_maps:
     with col_cont:
         st.subheader("🗺️ Contour Graph View")
         if contour_path and os.path.exists(contour_path):
-            # Render Matplotlib graph with the contour image as the background
             fig_cont, ax_cont = plt.subplots(figsize=(5, 6))
             
             c_img_obj = Image.open(contour_path).convert("RGB")
             max_depth_ft = saved_depth * 3.0
             green_width_ft = saved_width * 3.0
             
-            # Display contour image as background
             ax_cont.imshow(c_img_obj, extent=[0, green_width_ft, 0, max_depth_ft], origin='upper', alpha=0.9)
-            
-            # Add grid lines and ticks matching foot coordinates
             ax_cont.set_xticks(np.arange(0, green_width_ft + 1, 4))
             ax_cont.set_yticks(np.arange(0, max_depth_ft + 1, 5))
             ax_cont.grid(True, linestyle="--", alpha=0.5, color="#1f77b4")
@@ -300,7 +297,6 @@ with tab_maps:
             bx, by = st.session_state.ball_coords["x_ft"], st.session_state.ball_coords["y_ft"]
             hx, hy = st.session_state.hole_coords["x_ft"], st.session_state.hole_coords["y_ft"]
             
-            # Aim line & true curve overlay
             aim_x = hx - aim_ft_val if aim_side == "Left" else hx + aim_ft_val
             ax_cont.plot([bx, aim_x], [by, hy], color="#1f77b4", linewidth=2, linestyle="--", label="Aim Line")
             
@@ -310,7 +306,6 @@ with tab_maps:
             curve_y = (1 - t_vals)**2 * by + 2 * (1 - t_vals) * t_vals * (by + hy)/2 + t_vals**2 * hy
             ax_cont.plot(curve_x, curve_y, color="#2e7d32", linewidth=3.5, label="True Curve")
             
-            # Ball and Hole markers
             ax_cont.scatter([bx], [by], color="blue", s=80, zorder=5, edgecolors="white", label="Ball")
             ax_cont.scatter([hx], [hy], color="red", s=80, zorder=5, edgecolors="white", label="Hole")
             
@@ -319,7 +314,6 @@ with tab_maps:
             ax_cont.set_facecolor("#fafafa")
             fig_cont.patch.set_facecolor("white")
             
-            # Convert Matplotlib figure to PIL image for click coordinates
             buf = BytesIO()
             fig_cont.savefig(buf, format="png", bbox_inches="tight", dpi=150)
             plt.close(fig_cont)
