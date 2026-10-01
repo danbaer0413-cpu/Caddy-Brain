@@ -169,6 +169,7 @@ base_img_path = heat_path if heat_path else contour_path
 straight_dist_ft = aim_ft_val = speed_paces = slope_drop = 0.0
 aim_side = "Right"
 interactive_display_img = None
+contour_display_img = None
 pixels_to_ft_func = None
 max_depth_yds = saved_depth
 green_width_yds = saved_width
@@ -191,6 +192,22 @@ if base_img_path:
             slope_steepness="Standard Slope (Single Arrow)"
         )
         interactive_display_img = annotated_img
+        
+        if cont_img:
+            # Generate clean contour reference view matching calculation markings
+            cont_annotated, _, _, _, _, _, _ = calculate_putt_solution(
+                x_ball=st.session_state.ball_coords["x_ft"],
+                y_ball=st.session_state.ball_coords["y_ft"],
+                x_hole=st.session_state.hole_coords["x_ft"],
+                y_hole=st.session_state.hole_coords["y_ft"],
+                max_depth_yds=saved_depth,
+                green_width_ft=saved_width * 3.0,
+                calibrated_stimp=calibrated_stimp,
+                raw_img=cont_img,
+                contour_img=None,
+                slope_steepness="Standard Slope (Single Arrow)"
+            )
+            contour_display_img = cont_annotated
     except Exception as e:
         st.warning(f"Error loading maps: {e}")
 
@@ -279,48 +296,8 @@ with tab_maps:
             st.info("Heat map asset not found.")
 
     with col_cont:
-        st.subheader("🗺️ Contour Graph View")
-        if contour_path and os.path.exists(contour_path):
-            fig_cont, ax_cont = plt.subplots(figsize=(5, 6))
-            fig_cont.subplots_adjust(left=0.12, right=0.98, bottom=0.08, top=0.95)
-            
-            c_img_obj = Image.open(contour_path).convert("RGB")
-            max_depth_ft = saved_depth * 3.0
-            green_width_ft = saved_width * 3.0
-            
-            ax_cont.imshow(c_img_obj, extent=[0, green_width_ft, 0, max_depth_ft], origin='upper', aspect='auto')
-            
-            ax_cont.set_xticks(np.arange(0, green_width_ft + 1, 4))
-            ax_cont.set_yticks(np.arange(0, max_depth_ft + 1, 5))
-            ax_cont.grid(True, linestyle="--", alpha=0.6, color="#1f77b4")
-            
-            bx, by = st.session_state.ball_coords["x_ft"], st.session_state.ball_coords["y_ft"]
-            hx, hy = st.session_state.hole_coords["x_ft"], st.session_state.hole_coords["y_ft"]
-            
-            aim_x = hx - aim_ft_val if aim_side == "Left" else hx + aim_ft_val
-            ax_cont.plot([bx, aim_x], [by, hy], color="#1f77b4", linewidth=2, linestyle="--", label="Aim Line")
-            
-            t_vals = np.linspace(0, 1, 50)
-            curve_dir = -1.0 if aim_side == "Left" else 1.0
-            curve_x = (1 - t_vals)**2 * bx + 2 * (1 - t_vals) * t_vals * ((bx + hx)/2 + curve_dir * abs(slope_drop)*2.0) + t_vals**2 * hx
-            curve_y = (1 - t_vals)**2 * by + 2 * (1 - t_vals) * t_vals * (by + hy)/2 + t_vals**2 * hy
-            ax_cont.plot(curve_x, curve_y, color="#2e7d32", linewidth=3.5, label="True Curve")
-            
-            ax_cont.scatter([bx], [by], color="blue", s=80, zorder=5, edgecolors="white", label="Ball")
-            ax_cont.scatter([hx], [hy], color="red", s=80, zorder=5, edgecolors="white", label="Hole")
-            
-            ax_cont.set_xlim(0, green_width_ft)
-            ax_cont.set_ylim(0, max_depth_ft)
-            ax_cont.set_facecolor("#fafafa")
-            fig_cont.patch.set_facecolor("white")
-            
-            buf = BytesIO()
-            fig_cont.savefig(buf, format="png", dpi=150)
-            plt.close(fig_cont)
-            buf.seek(0)
-            cont_plot_img = Image.open(buf)
-            
-            # Displayed purely as a visual projection/graph matching the heat map data state
-            st.image(cont_plot_img, width=380)
+        st.subheader("🗺️ Contour Map Reference")
+        if contour_display_img:
+            st.image(contour_display_img, width=380)
         else:
             st.info("Contour map asset not found.")
