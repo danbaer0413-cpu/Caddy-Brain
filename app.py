@@ -131,7 +131,7 @@ if base_img_path:
             y_ft = ((box_y_bottom - py) / box_height) * max_depth_ft
             return max(0.0, min(x_ft, green_width_ft)), max(0.0, min(y_ft, max_depth_ft))
 
-        # --- MULTI-POINT PATH SAMPLING (Heat + Contour Cross-Reference) ---
+        # --- CORRECTED MULTI-POINT PATH SAMPLING ---
         bx_px, by_px = ft_to_pixels(x_ball, y_ball)
         hx_px, hy_px = ft_to_pixels(x_hole, y_hole)
         
@@ -139,7 +139,7 @@ if base_img_path:
         sample_offset = int(max(4, (box_x_max - box_x_min) * 0.04))
         gradient_multiplier = 1.3 if "Double" in slope_steepness else 0.9
 
-        # Sample across 5 checkpoints along the putt line
+        # Sample across checkpoints along the putt line
         for t_val in [0.2, 0.4, 0.6, 0.8]:
             chk_x = bx_px + t_val * (hx_px - bx_px)
             chk_y = by_px + t_val * (hy_px - by_px)
@@ -147,16 +147,18 @@ if base_img_path:
             left_p = (int(max(0, chk_x - sample_offset)), int(chk_y))
             right_p = (int(min(img_w - 1, chk_x + sample_offset)), int(chk_y))
             
-            # Heat map sampling
+            # Heat map sampling (Red minus Blue channel gradient)
             h_left = raw_img.getpixel(left_p)
             h_right = raw_img.getpixel(right_p)
-            heat_lateral = (h_right[0] - h_right[2] - (h_left[0] - h_left[2])) / 80.0
+            h_left_elev = int(h_left[0]) - int(h_left[2])
+            h_right_elev = int(h_right[0]) - int(h_right[2])
+            heat_lateral = (h_right_elev - h_left_elev) / 60.0
             
             # Contour cross-reference sampling if available
             if contour_img:
                 c_left = contour_img.getpixel(left_p)
                 c_right = contour_img.getpixel(right_p)
-                contour_lateral = (int(c_right[0]) - int(c_left[0])) / 100.0
+                contour_lateral = (int(c_right[0]) - int(c_left[0])) / 80.0
                 combined_lateral = (heat_lateral * 0.6) + (contour_lateral * 0.4)
             else:
                 combined_lateral = heat_lateral
@@ -166,13 +168,9 @@ if base_img_path:
         if sample_breaks:
             avg_lateral = sum(sample_breaks) / len(sample_breaks)
             slope_drop = avg_lateral * gradient_multiplier
-        
-        # Fallback if pixel data yields zero
-        if abs(slope_drop) < 0.001:
-            slope_drop = ((0.02 * x_hole - 0.015 * y_hole) - (0.02 * x_ball - 0.015 * y_hole)) * gradient_multiplier
 
-        # Refined Aim Calculation (Damped for short putts to prevent over-breaking)
-        aim_offset_ft = slope_drop * (calibrated_stimp / 8.0) * 0.18 * straight_dist_ft
+        # Refined Aim Calculation
+        aim_offset_ft = slope_drop * (calibrated_stimp / 8.0) * 0.15 * straight_dist_ft
         aim_side = "Left" if slope_drop < 0 else "Right"
         aim_ft_val = abs(aim_offset_ft)
 
