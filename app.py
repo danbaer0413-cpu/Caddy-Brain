@@ -63,19 +63,56 @@ def calculate_putt_solution(x_ball, y_ball, x_hole, y_hole, max_depth_yds, green
     bx_px, by_px = ft_to_pixels(x_ball, y_ball)
     hx_px, hy_px = ft_to_pixels(x_hole, y_hole)
     
-    # Calculate slope drop and break offset components based on horizontal position
-    slope_drop = (y_ball - y_hole) * 0.035 
-    aim_offset_ft = abs(slope_drop * (calibrated_stimp / 8.0) * 0.2 * (straight_dist_ft / 10.0))
+    # --- ADVANCED IMAGE SAMPLING FOR GRADIENT & BREAK ---
+    img_np = np.array(raw_img)
+    num_samples = 15
+    sample_x = np.linspace(bx_px, hx_px, num_samples).astype(int)
+    sample_y = np.linspace(by_px, hy_px, num_samples).astype(int)
     
-    # Determine side based on ball relative to hole, with manual override option
-    natural_side = "Right" if x_ball > x_hole else "Left"
-    if break_mode == "Inverted (Flip L/R)":
-        aim_side = "Left" if natural_side == "Right" else "Right"
-    else:
-        aim_side = natural_side
+    red_score = 0
+    blue_score = 0
+    gradient_intensity_sum = 0
+    
+    for sx, sy in zip(sample_x, sample_y):
+        if 0 <= sy < img_np.shape[0] and 0 <= sx < img_np.shape[1]:
+            r, g, b = img_np[sy, sx][:3]
+            red_score += int(r)
+            blue_score += int(b)
+            # Color saturation / distance from neutral gray represents slope steepness (gradient)
+            neutral = (int(r) + int(g) + int(b)) / 3.0
+            saturation = abs(int(r) - neutral) + abs(int(b) - neutral)
+            gradient_intensity_sum += saturation
 
-    aim_ft_val = aim_offset_ft
-    stroke_feel_ft = round(straight_dist_ft * (calibrated_stimp / 8.0), 1)
+    avg_gradient_factor = max(0.5, min(2.5, (gradient_intensity_sum / num_samples) / 40.0))
+
+    # Determine Break Side
+    natural_side = "Right" if red_score > blue_score else "Left"
+    if x_ball > x_hole:
+        geo_side = "Right"
+    else:
+        geo_side = "Left"
+        
+    # Combine image gradient sampling with geometry
+    detected_side = natural_side if abs(red_score - blue_score) > 1000 else geo_side
+    
+    if break_mode == "Inverted (Flip L/R)":
+        aim_side = "Left" if detected_side == "Right" else "Right"
+    else:
+        aim_side = detected_side
+
+    # --- ELEVATION & "PLAY AS" DISTANCE CALCULATION ---
+    # Vertical coordinate delta representing uphill/downhill component
+    elevation_delta_ft = (y_hole - y_ball) * 0.15  
+    play_as_dist_ft = straight_dist_ft - elevation_delta_ft # Downhill reduces distance, uphill increases
+    play_as_dist_ft = max(1.0, play_as_dist_ft)
+
+    # Stroke feel scaled by Stimp and gradient
+    stroke_feel_ft = round(play_as_dist_ft * (calibrated_stimp / 8.0), 1)
+
+    # Aim offset calculation driven by gradient intensity and distance
+    base_drop = abs(y_ball - y_hole) * 0.04
+    aim_offset_ft = base_drop * avg_gradient_factor * (calibrated_stimp / 8.0) * (straight_dist_ft / 12.0)
+    aim_ft_val = round(aim_offset_ft, 2)
 
     # --- SHIFT THE AIM DOT PERPENDICULAR TO THE PUTT LINE ---
     dx = hx_px - bx_px
@@ -120,7 +157,7 @@ def calculate_putt_solution(x_ball, y_ball, x_hole, y_hole, max_depth_yds, green
     text_y = ty_px - 8
     draw.text((text_x, text_y), aim_label_text, fill="#1b365d", font=font)
     
-    return draw_img, straight_dist_ft, aim_ft_val, aim_side, stroke_feel_ft, pixels_to_ft, slope_drop
+    return draw_img, straight_dist_ft, play_as_dist_ft, aim_ft_val, aim_side, stroke_feel_ft, pixels_to_ft
 
 # --- 3. SIDEBAR CONTROLS ---
 st.sidebar.header("1. Course & Hole")
@@ -132,7 +169,7 @@ saved_width = st.session_state.courses_db[selected_course][selected_hole]["width
 
 st.sidebar.header("2. Stimp & Break Settings")
 base_stimp = st.sidebar.slider("Stimp", 6.0, 12.0, 8.0)
-break_mode = st.sidebar.radio("Break Direction Mode", ["Standard (Default)", "Inverted (Flip L/R)"])
+break_mode = st.sidebar.selectbox("Break Direction Override", ["Auto (Sampled)", "Inverted (Flip L/R)"])
 
 st.sidebar.header("3. Marker Mode")
 placement_mode = st.sidebar.radio("Click sets:", ["🔴 Hole Position", "🔵 Ball Position"])
@@ -159,7 +196,7 @@ st.title(f"⛳ Hole #{selected_hole} ({selected_course})")
 if heat_path:
     raw_img = Image.open(heat_path).convert("RGB")
     
-    annotated_img, straight_dist, aim_val, aim_dir, stroke_dist, pixels_to_ft_func, slope_drop = calculate_putt_solution(
+    annotated_img, straight_dist, play_as_dist, aim_val, aim_dir, stroke_dist, pixels_to_ft_func = calculate_putt_solution(
         x_ball=st.session_state.ball_coords["x_ft"],
         y_ball=st.session_state.ball_coords["y_ft"],
         x_hole=st.session_state.hole_coords["x_ft"],
@@ -175,13 +212,13 @@ if heat_path:
     # --- TOP METRICS READOUT ---
     c1, c2, c3 = st.columns(3)
     with c1:
-        aim_str = f"{format_feet_inches(aim_val)} {aim_dir}" if aim_val > 0.1 else "Straight"
+        aim_str = f"{format_feet_inches(aim_val)} {aim_dir}" if aim_val > 0.05 else "Straight"
         st.metric(label="🎯 Aim Offset", value=aim_str)
     with c2:
-        st.metric(label="⚡ Stroke Feel Distance", value=f"{stroke_dist} ft", delta=f"~{round(stroke_dist/3.0, 1)} paces")
+        st.metric(label="⚡ Stroke Feel Distance", value=f"{stroke_dist} ft", delta=f"Play As: {round(play_as_dist, 1)} ft (Actual: {round(straight_dist, 1)} ft)")
     with c3:
         break_desc = "Right-to-Left Break" if aim_dir == "Right" else "Left-to-Right Break"
-        st.metric(label="📈 Expected Break", value=break_desc, delta=f"{round(straight_dist, 1)} ft straight distance")
+        st.metric(label="📈 Expected Break", value=break_desc, delta=f"Gradient-weighted aim")
 
     st.markdown("---")
 
