@@ -73,13 +73,14 @@ def get_slope(path, width_ft, depth_ft, red_is_high, relief_ft):
     img = load_heat_map(path)
     arr = np.array(img)
     
-    # Smooth out sharp boundary lines on the outer edge to prevent false cliffs
+    # Smooth out sharp boundary lines on the outer edge safely using single-pixel assignments
     margin = 10
     if arr.shape[0] > 2 * margin and arr.shape[1] > 2 * margin:
-        arr[:margin, :, :] = arr[margin, :, :]
-        arr[-margin:, :, :] = arr[-margin-1, :, :]
-        arr[:, :margin, :] = arr[:, margin, :]
-        arr[:, -margin:, :] = arr[:, -margin-1, :]
+        for i in range(margin):
+            arr[:, i, :] = arr[:, margin, :]
+            arr[:, -(i+1), :] = arr[:, -(margin+1), :]
+            arr[i, :, :] = arr[margin, :, :]
+            arr[-(i+1), :, :] = arr[-(margin+1), :, :]
 
     geom = pe.make_geom(img.width, img.height, width_ft, depth_ft)
     sx, sy, meta = pe.build_slope_field(arr, geom, red_is_high, relief_ft)
