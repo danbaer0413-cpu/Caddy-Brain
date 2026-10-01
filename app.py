@@ -15,7 +15,8 @@ st.set_page_config(page_title="CaddyBrain Green Reader", page_icon="⛳", layout
 
 if "courses_db" not in st.session_state:
     st.session_state.courses_db = {
-        "Mercer Oaks East": {i: {"max_depth_yds": 28.0, "width_yds": 14.0} for i in range(1, 19)}
+        "Mercer Oaks East": {i: {"max_depth_yds": 28.0, "width_yds": 14.0} for i in range(1, 19)},
+        "Mercer Oaks West": {i: {"max_depth_yds": 28.0, "width_yds": 14.0} for i in range(1, 19)}
     }
 if "ball_coords" not in st.session_state or not isinstance(st.session_state.ball_coords, dict):
     st.session_state.ball_coords = {"x_ft": 29.5, "y_ft": 52.1}
