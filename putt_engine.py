@@ -39,28 +39,88 @@ def _blur(a, passes=2):
     return a
 
 
-def build_slope_field(img_np, geom, red_is_high=True, relief_ft=1.0, step=4):
+def outline_mask(img_np, grow_px=3, tol=60):
+    """True on the solid green boundary line (plus a margin for anti-aliased edge pixels)."""
+    a = img_np.astype(int)
+    r, g, b = a[..., 0], a[..., 1], a[..., 2]
+    m = (g > 110) & (g - r > tol) & (g - b > tol)
+    for _ in range(grow_px):
+        n = m.copy()
+        n[1:] |= m[:-1]; n[:-1] |= m[1:]; n[:, 1:] |= m[:, :-1]; n[:, :-1] |= m[:, 1:]
+        m = n
+    return m
+
+
+def _outside_region(line):
+    """Cells reachable from the image border without crossing the outline = outside the green."""
+    out = np.zeros_like(line)
+    out[0, :], out[-1, :], out[:, 0], out[:, -1] = True, True, True, True
+    out &= ~line
+    while True:
+        n = out.copy()
+        n[1:] |= out[:-1]; n[:-1] |= out[1:]; n[:, 1:] |= out[:, :-1]; n[:, :-1] |= out[:, 1:]
+        n &= ~line
+        if (n == out).all():
+            return out
+        out = n
+
+
+def _shift(a, dy, dx):
+    h, w = a.shape
+    return np.pad(a, 1)[1 + dy:1 + dy + h, 1 + dx:1 + dx + w]
+
+
+def _fill_masked(h, bad):
+    """Fill ignored cells from their valid neighbours so no step edge is left behind."""
+    h, valid = h.copy(), ~bad
+    for _ in range(400):
+        if valid.all():
+            break
+        hv, w = np.where(valid, h, 0.0), valid.astype(float)
+        sh = sum(_shift(hv, dy, dx) for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)))
+        sw = sum(_shift(w, dy, dx) for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)))
+        new = (~valid) & (sw > 0)
+        if not new.any():
+            break
+        h[new] = sh[new] / sw[new]
+        valid |= new
+    return h
+
+
+def build_slope_field(img_np, geom, red_is_high=True, relief_ft=1.0, step=4, ignore_outline=True):
     """Return (sx, sy, meta): slope (ft rise per ft) on a coarse grid.
 
     geom: dict(box_x_min, box_x_max, box_y_bottom, box_height, width_ft, depth_ft).
     relief_ft: assumed elevation difference between the coolest and warmest color on the map.
     Treat this as a calibration knob: bigger = more break.
+    ignore_outline: skip the solid green boundary line (and anything outside it) so the edge
+    of the map is not mistaken for a slope.
     """
+    ignored = np.zeros(img_np[::step, ::step].shape[:2], bool)
+    if ignore_outline:
+        line = outline_mask(img_np)[::step, ::step]
+        if line.mean() > 0.002:                       # an outline is actually present
+            outside = _outside_region(line)
+            if (~(line | outside)).mean() > 0.2:      # outline is closed; otherwise don't trust the flood fill
+                ignored = line | outside
+            else:
+                ignored = line
+
     a = img_np.astype(float)[::step, ::step]
-    r, g, b = a[..., 0], a[..., 1], a[..., 2]
-    h = (r - b) / 255.0                      # warm minus cool, -1..1
+    h = (a[..., 0] - a[..., 2]) / 255.0              # warm minus cool, -1..1
     if not red_is_high:
         h = -h
-    h = _blur(h)
-    h = (h - h.min()) / max(1e-6, h.max() - h.min())   # 0..1
-    h *= relief_ft
+    h = _blur(_fill_masked(h, ignored))
+    ok = ~ignored if (~ignored).any() else np.ones_like(ignored)
+    h = (h - h[ok].min()) / max(1e-6, h[ok].max() - h[ok].min())   # 0..1 over real map pixels only
+    h = np.clip(h, 0, 1) * relief_ft
 
     px_per_ft_x = (geom["box_x_max"] - geom["box_x_min"]) / geom["width_ft"]
     px_per_ft_y = geom["box_height"] / geom["depth_ft"]
     dh_dpy, dh_dpx = np.gradient(h, step, step)          # per original pixel
     sx = dh_dpx * px_per_ft_x
     sy = -dh_dpy * px_per_ft_y                           # image rows grow downward, y_ft grows upward
-    return sx, sy, {"step": step, "field": np.stack([sx, sy], axis=-1), **geom}
+    return sx, sy, {"step": step, "field": np.stack([sx, sy], axis=-1), "ignored": ignored, **geom}
 
 
 def _sample(meta, x, y):
