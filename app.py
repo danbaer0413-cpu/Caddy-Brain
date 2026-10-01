@@ -2,10 +2,11 @@ import streamlit as st
 import numpy as np
 import os
 from PIL import Image, ImageDraw
+from io import BytesIO
 from streamlit_image_coordinates import streamlit_image_coordinates
 import matplotlib.pyplot as plt
 
-# --- 1. CONFIG & BULLETPROOF SESSION STATE ---
+# --- 1. CONFIG & SESSION STATE ---
 st.set_page_config(page_title="CaddyBrain Green Reader", page_icon="⛳", layout="wide")
 
 if "courses_db" not in st.session_state:
@@ -39,9 +40,9 @@ def format_feet_inches(total_feet):
 
 def calculate_putt_solution(x_ball, y_ball, x_hole, y_hole, max_depth_yds, green_width_ft, calibrated_stimp, raw_img, contour_img, slope_steepness):
     img_w, img_h = raw_img.size
-    box_x_min, box_x_max = img_w * 0.22, img_w * 0.78
-    box_y_bottom = img_h * 0.88
-    box_height = max_depth_yds * ((img_h * 0.76) / 28.0)
+    box_x_min, box_x_max = img_w * 0.15, img_w * 0.85
+    box_y_bottom = img_h * 0.92
+    box_height = img_h * 0.80
     
     def ft_to_pixels(x_ft, y_ft):
         max_depth_ft = max_depth_yds * 3.0
@@ -72,15 +73,21 @@ def calculate_putt_solution(x_ball, y_ball, x_hole, y_hole, max_depth_yds, green
         left_p = (int(max(0, chk_x - sample_offset)), int(chk_y))
         right_p = (int(min(img_w - 1, chk_x + sample_offset)), int(chk_y))
         
-        h_left = raw_img.getpixel(left_p)
-        h_right = raw_img.getpixel(right_p)
-        heat_lateral = (int(h_right[0]) - int(h_right[2]) - (int(h_left[0]) - int(h_left[2]))) / 60.0
-        
+        try:
+            h_left = raw_img.getpixel(left_p)
+            h_right = raw_img.getpixel(right_p)
+            heat_lateral = (int(h_right[0]) - int(h_right[2]) - (int(h_left[0]) - int(h_left[2]))) / 60.0
+        except:
+            heat_lateral = 0.0
+            
         if contour_img:
-            c_left = contour_img.getpixel(left_p)
-            c_right = contour_img.getpixel(right_p)
-            contour_lateral = (int(c_right[0]) - int(c_left[0])) / 80.0
-            combined_lateral = (heat_lateral * 0.6) + (contour_lateral * 0.4)
+            try:
+                c_left = contour_img.getpixel(left_p)
+                c_right = contour_img.getpixel(right_p)
+                contour_lateral = (int(c_right[0]) - int(c_left[0])) / 80.0
+                combined_lateral = (heat_lateral * 0.6) + (contour_lateral * 0.4)
+            except:
+                combined_lateral = heat_lateral
         else:
             combined_lateral = heat_lateral
             
@@ -96,7 +103,7 @@ def calculate_putt_solution(x_ball, y_ball, x_hole, y_hole, max_depth_yds, green
     recommended_speed_paces = straight_paces * (8.0 / calibrated_stimp) + elevation_speed_adj + 0.2
     recommended_speed_paces = max(1.0, round(recommended_speed_paces, 1))
 
-    # Draw overlays on image
+    # Draw overlays on image copy
     draw_img = raw_img.copy()
     draw = ImageDraw.Draw(draw_img)
     
@@ -124,7 +131,7 @@ def calculate_putt_solution(x_ball, y_ball, x_hole, y_hole, max_depth_yds, green
         if i % 2 == 0:
             draw.line([curve_points[i], curve_points[i+1]], fill="yellow", width=4)
     
-    dot_r = 6
+    dot_r = 7
     draw.ellipse([bx_px - dot_r, by_px - dot_r, bx_px + dot_r, by_px + dot_r], fill="blue", outline="white", width=2)
     draw.ellipse([hx_px - dot_r, hy_px - dot_r, hx_px + dot_r, hy_px + dot_r], fill="red", outline="white", width=2)
     draw.ellipse([tx_px - (dot_r-1), ty_px - (dot_r-1), tx_px + (dot_r-1), ty_px + (dot_r-1)], fill="cyan", outline="black", width=2)
@@ -162,7 +169,7 @@ base_img_path = heat_path if heat_path else contour_path
 # Execute Engine
 straight_dist_ft = aim_ft_val = speed_paces = slope_drop = 0.0
 aim_side = "Right"
-interactive_display_img = contour_display_img = None
+interactive_display_img = None
 pixels_to_ft_func = None
 max_depth_yds = saved_depth
 green_width_yds = saved_width
@@ -185,27 +192,13 @@ if base_img_path:
             slope_steepness="Standard Slope (Single Arrow)"
         )
         interactive_display_img = annotated_img
-        if cont_img:
-            cont_annotated, _, _, _, _, _, _ = calculate_putt_solution(
-                x_ball=st.session_state.ball_coords["x_ft"],
-                y_ball=st.session_state.ball_coords["y_ft"],
-                x_hole=st.session_state.hole_coords["x_ft"],
-                y_hole=st.session_state.hole_coords["y_ft"],
-                max_depth_yds=saved_depth,
-                green_width_ft=saved_width * 3.0,
-                calibrated_stimp=calibrated_stimp,
-                raw_img=cont_img,
-                contour_img=None,
-                slope_steepness="Standard Slope (Single Arrow)"
-            )
-            contour_display_img = cont_annotated
     except Exception as e:
         st.warning(f"Error loading maps: {e}")
 
 # --- 4. MAIN INTERFACE TABS ---
 st.title(f"⛳ Hole #{selected_hole} ({selected_course})")
 
-tab_dashboard, tab_maps = st.tabs(["📊 Trajectory & Metrics Dashboard", "🗺️ Dual-Map Green Inspector"])
+tab_dashboard, tab_maps = st.tabs(["📊 Trajectory & Metrics Dashboard", "🗺️️ Dual-Map Green Inspector"])
 
 with tab_dashboard:
     c1, c2, c3 = st.columns(3)
@@ -223,9 +216,9 @@ with tab_dashboard:
     st.markdown("---")
     st.subheader("Top-Down Trajectory Visualizer *(Aim Line vs True Curve)*")
     
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.set_xticks(np.arange(0, 15, 1))
-    ax.set_yticks(np.arange(0, 50, 5))
+    fig, ax = plt.subplots(figsize=(9, 4.5))
+    ax.set_xticks(np.arange(0, green_width_yds * 3.0 + 3, 2))
+    ax.set_yticks(np.arange(0, 60, 5))
     ax.grid(True, linestyle="--", alpha=0.5, color="#dcdcdc")
     
     bx, by = st.session_state.ball_coords["x_ft"], st.session_state.ball_coords["y_ft"]
@@ -234,21 +227,21 @@ with tab_dashboard:
     aim_x = hx - aim_ft_val if aim_side == "Left" else hx + aim_ft_val
     
     ax.plot([bx, aim_x], [by, hy], color="#2b5c8f", linewidth=2, label="Aim Line")
-    ax.scatter([aim_x], [hy], color="#2b5c8f", s=50, zorder=5)
-    ax.text(aim_x - 1.5, hy + 1, f"Aim ({format_feet_inches(aim_ft_val)})", color="#2b5c8f", fontweight="bold")
+    ax.scatter([aim_x], [hy], color="#2b5c8f", s=60, zorder=5)
+    ax.text(aim_x, hy + 1.5, f"Aim ({format_feet_inches(aim_ft_val)})", color="#2b5c8f", fontweight="bold", ha="center")
     
     t_vals = np.linspace(0, 1, 50)
     curve_direction_factor = -1.0 if aim_side == "Left" else 1.0
-    curve_x = (1 - t_vals)**2 * bx + 2 * (1 - t_vals) * t_vals * ((bx + hx)/2 + curve_direction_factor * abs(slope_drop)*2) + t_vals**2 * hx
+    curve_x = (1 - t_vals)**2 * bx + 2 * (1 - t_vals) * t_vals * ((bx + hx)/2 + curve_direction_factor * abs(slope_drop)*2.5) + t_vals**2 * hx
     curve_y = (1 - t_vals)**2 * by + 2 * (1 - t_vals) * t_vals * (by + hy)/2 + t_vals**2 * hy
-    ax.plot(curve_x, curve_y, color="#2e7d32", linewidth=3, label="True Curve")
+    ax.plot(curve_x, curve_y, color="#2e7d32", linewidth=3.5, label="True Curve")
     
     ax.plot([hx, hx], [by, hy], color="gray", linestyle=":", linewidth=1.5)
-    ax.scatter([bx], [by], color="black", s=70, zorder=6)
-    ax.scatter([hx], [hy], color="black", s=70, zorder=6)
+    ax.scatter([bx], [by], color="black", s=80, zorder=6, label="Ball")
+    ax.scatter([hx], [hy], color="black", s=80, zorder=6, label="Hole")
     
-    ax.set_xlim(-2, green_width_yds * 3.0 + 2)
-    ax.set_ylim(min(by, hy) - 3, max(by, hy) + 5)
+    ax.set_xlim(-1, green_width_yds * 3.0 + 1)
+    ax.set_ylim(min(by, hy) - 4, max(by, hy) + 6)
     ax.set_facecolor("#fafafa")
     fig.patch.set_facecolor("white")
     
@@ -256,7 +249,7 @@ with tab_dashboard:
     st.caption(f"Calculated for a {round(straight_dist_ft, 1)} ft putt with Stimp {calibrated_stimp:.1f}.")
 
 with tab_maps:
-    col_ctrl, col_heat, col_cont = st.columns([1, 1.5, 1.5])
+    col_ctrl, col_heat, col_cont = st.columns([1.2, 1.4, 1.4])
     
     with col_ctrl:
         st.subheader("Marker Controls")
@@ -273,9 +266,9 @@ with tab_maps:
         st.markdown(f"**Current Hole:** `X: {st.session_state.hole_coords['x_ft']:.1f}ft, Y: {st.session_state.hole_coords['y_ft']:.1f}ft`")
 
     with col_heat:
-        st.subheader("🔥 Heat Map Overlay")
+        st.subheader("🔥 Heat Map")
         if interactive_display_img and pixels_to_ft_func:
-            clicked_heat = streamlit_image_coordinates(interactive_display_img, key="heat_map_click", width=400)
+            clicked_heat = streamlit_image_coordinates(interactive_display_img, key="heat_map_click", width=380)
             if clicked_heat is not None:
                 cx, cy = pixels_to_ft_func(clicked_heat["x"], clicked_heat["y"])
                 if "Hole" in placement_mode:
@@ -287,15 +280,65 @@ with tab_maps:
             st.info("Heat map asset not found.")
 
     with col_cont:
-        st.subheader("🗺️ Contour Map Overlay")
-        if contour_display_img and pixels_to_ft_func:
-            clicked_cont = streamlit_image_coordinates(contour_display_img, key="contour_map_click", width=400)
-            if clicked_cont is not None:
-                cx, cy = pixels_to_ft_func(clicked_cont["x"], clicked_cont["y"])
+        st.subheader("🗺️ Contour Graph View")
+        if contour_path and os.path.exists(contour_path):
+            # Render Matplotlib graph with the contour image as the background
+            fig_cont, ax_cont = plt.subplots(figsize=(5, 6))
+            
+            c_img_obj = Image.open(contour_path).convert("RGB")
+            max_depth_ft = saved_depth * 3.0
+            green_width_ft = saved_width * 3.0
+            
+            # Display contour image as background
+            ax_cont.imshow(c_img_obj, extent=[0, green_width_ft, 0, max_depth_ft], origin='upper', alpha=0.9)
+            
+            # Add grid lines and ticks matching foot coordinates
+            ax_cont.set_xticks(np.arange(0, green_width_ft + 1, 4))
+            ax_cont.set_yticks(np.arange(0, max_depth_ft + 1, 5))
+            ax_cont.grid(True, linestyle="--", alpha=0.5, color="#1f77b4")
+            
+            bx, by = st.session_state.ball_coords["x_ft"], st.session_state.ball_coords["y_ft"]
+            hx, hy = st.session_state.hole_coords["x_ft"], st.session_state.hole_coords["y_ft"]
+            
+            # Aim line & true curve overlay
+            aim_x = hx - aim_ft_val if aim_side == "Left" else hx + aim_ft_val
+            ax_cont.plot([bx, aim_x], [by, hy], color="#1f77b4", linewidth=2, linestyle="--", label="Aim Line")
+            
+            t_vals = np.linspace(0, 1, 50)
+            curve_dir = -1.0 if aim_side == "Left" else 1.0
+            curve_x = (1 - t_vals)**2 * bx + 2 * (1 - t_vals) * t_vals * ((bx + hx)/2 + curve_dir * abs(slope_drop)*2.0) + t_vals**2 * hx
+            curve_y = (1 - t_vals)**2 * by + 2 * (1 - t_vals) * t_vals * (by + hy)/2 + t_vals**2 * hy
+            ax_cont.plot(curve_x, curve_y, color="#2e7d32", linewidth=3.5, label="True Curve")
+            
+            # Ball and Hole markers
+            ax_cont.scatter([bx], [by], color="blue", s=80, zorder=5, edgecolors="white", label="Ball")
+            ax_cont.scatter([hx], [hy], color="red", s=80, zorder=5, edgecolors="white", label="Hole")
+            
+            ax_cont.set_xlim(0, green_width_ft)
+            ax_cont.set_ylim(0, max_depth_ft)
+            ax_cont.set_facecolor("#fafafa")
+            fig_cont.patch.set_facecolor("white")
+            
+            # Convert Matplotlib figure to PIL image for click coordinates
+            buf = BytesIO()
+            fig_cont.savefig(buf, format="png", bbox_inches="tight", dpi=150)
+            plt.close(fig_cont)
+            buf.seek(0)
+            cont_plot_img = Image.open(buf)
+            
+            clicked_cont_plot = streamlit_image_coordinates(cont_plot_img, key="contour_graph_click", width=380)
+            if clicked_cont_plot is not None:
+                plot_w, plot_h = cont_plot_img.size
+                click_x_ft = (clicked_cont_plot["x"] / plot_w) * green_width_ft * 1.15 - (green_width_ft * 0.075)
+                click_y_ft = max_depth_ft - (clicked_cont_plot["y"] / plot_h) * max_depth_ft * 1.15 + (max_depth_ft * 0.075)
+                
+                cx = max(0.0, min(click_x_ft, green_width_ft))
+                cy = max(0.0, min(click_y_ft, max_depth_ft))
+                
                 if "Hole" in placement_mode:
                     st.session_state.hole_coords = {"x_ft": cx, "y_ft": cy}
                 else:
                     st.session_state.ball_coords = {"x_ft": cx, "y_ft": cy}
                 st.rerun()
         else:
-            st.info("Contour map asset not found in assets folder.")
+            st.info("Contour map asset not found.")
