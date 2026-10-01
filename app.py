@@ -26,7 +26,32 @@ if "hole_coords" not in st.session_state or not isinstance(st.session_state.hole
 DISPLAY_WIDTH = 420
 
 
-# --- 2. HELPERS ---
+# --- 2. ONBOARDING TUTORIAL MODAL ---
+@st.dialog("⛳ Welcome to CaddyBrain Green Reader")
+def show_tutorial():
+    st.markdown("""
+    Welcome! Here is a quick 4-step guide to reading putts like a pro on the course:
+
+    1. **Select Your Course & Hole**  
+       Open the sidebar and pick your course and the hole number you are playing.
+    2. **Position the Markers**  
+       In the sidebar, choose whether your next tap sets the **🔴 Hole Position** or the **🔵 Ball Position**, then tap directly on the heat map where you are standing.
+    3. **Dial In Speed & Slope**  
+       Adjust your **Stimp** (green speed) and **Miss-Past Pace** to match how hard you plan to hit the putt.
+    4. **Execute & Roll**  
+       Check your **Aim Offset** (in feet/inches and cup widths) and view the simulated ball path to see how the break will carry it into the cup!
+    """)
+    if st.button("Let's Read Some Putts! 🏌️‍♂️", use_container_width=True):
+        st.session_state.onboarded = True
+        st.rerun()
+
+# Trigger tutorial automatically on first app load
+if "onboarded" not in st.session_state:
+    st.session_state.onboarded = True  # Change to False if you want it to pop up fresh on boot
+    show_tutorial()
+
+
+# --- 3. HELPERS ---
 def format_feet_inches(total_feet):
     ft_total = abs(total_feet)
     ft = int(ft_total)
@@ -59,7 +84,6 @@ def get_solution(path, width_ft, depth_ft, red_is_high, relief_ft, ball, hole, s
 
 
 def classic_read(img, geom, ball, hole, stimp):
-    """The original sampling method, kept so you can compare it against the physics read."""
     arr = np.array(img)
     bx, by = pe.ft_to_px(geom, *ball)
     hx, hy = pe.ft_to_px(geom, *hole)
@@ -79,14 +103,14 @@ def classic_read(img, geom, ball, hole, stimp):
 def draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows):
     out = img.copy()
     d = ImageDraw.Draw(out)
-    if show_arrows:   # computed downhill arrows, to compare against the arrows printed on the map
+    if show_arrows:
         step = 40
         for py in range(int(geom["box_y_bottom"] - geom["box_height"]), int(geom["box_y_bottom"]), step):
             for px in range(int(geom["box_x_min"]), int(geom["box_x_max"]), step):
                 gx, gy = int(px / meta["step"]), int(py / meta["step"])
                 if gy >= sx.shape[0] or gx >= sx.shape[1]:
                     continue
-                vx, vy = -sx[gy, gx], sy[gy, gx]       # downhill in pixel space (rows grow downward)
+                vx, vy = -sx[gy, gx], sy[gy, gx]
                 mag = np.hypot(vx, vy)
                 if mag < 0.004:
                     continue
@@ -109,10 +133,9 @@ def draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows):
 
 
 def trajectory_chart(sol):
-    """Top-down view: ball at the bottom, hole straight ahead, aim line vs. the true curved path."""
     dist = sol["dist_ft"]
     sign = 1 if sol["aim_side"] == "Left" else -1
-    aim_x = -sign * sol["aim_offset_ft"]                    # plot right = player's right
+    aim_x = -sign * sol["aim_offset_ft"]
     px, py = -sol["path_frame"][:, 0], sol["path_frame"][:, 1]
     lim = max(1.0, 1.5 * max(sol["aim_offset_ft"], sol["max_break_ft"]))
 
@@ -142,8 +165,12 @@ def trajectory_chart(sol):
     return fig
 
 
-# --- 3. SIDEBAR ---
+# --- 4. SIDEBAR ---
 sb = st.sidebar
+sb.header("Help & Guide")
+if sb.button("📖 Open App Tutorial", use_container_width=True):
+    show_tutorial()
+
 sb.header("1. Course & Hole")
 course = sb.selectbox("Course", list(st.session_state.courses_db.keys()))
 hole_no = sb.selectbox("Hole #", list(st.session_state.courses_db[course].keys()))
@@ -154,10 +181,9 @@ sb.header("2. Green Speed & Slope")
 stimp = sb.slider("Stimp", 6.0, 13.0, 8.0, 0.5)
 color_scale = sb.selectbox("Heat map colors", ["Red = high ground", "Red = low ground (flip)"])
 relief_ft = sb.slider("Green relief (ft)", 0.3, 4.0, 1.0, 0.1,
-                      help="Elevation difference between the coolest and warmest color. "
-                           "Raise it if reads look too straight, lower it if they look too curvy.")
+                      help="Elevation difference between the coolest and warmest color.")
 past_ft = sb.slider("Miss-past pace (ft)", 0.5, 3.0, 1.5, 0.25,
-                    help="How far past the hole the ball would stop. Slower pace = more break.")
+                    help="How far past the hole the ball would stop.")
 
 sb.header("3. Marker Mode")
 placement_mode = sb.radio("Click sets:", ["🔴 Hole Position", "🔵 Ball Position"])
@@ -172,7 +198,7 @@ folder = course.lower().replace(" ", "_")
 heat_path = next((f"assets/{folder}/{n}" for n in (f"{hole_no}_Heat.png", f"{hole_no}_heat.png")
                   if os.path.exists(f"assets/{folder}/{n}")), None)
 
-# --- 4. MAIN ---
+# --- 5. MAIN ---
 st.title(f"⛳ Hole #{hole_no}")
 
 if not heat_path:
@@ -206,16 +232,14 @@ with tab_traj:
     c3.metric("📈 Effective Break Factor", f"{factor:.2f}x", delta=f"{severity} break severity", delta_color="off")
     st.markdown("---")
     st.subheader("Top-Down Trajectory")
-    st.caption("Green line: where to aim. Blue curve: where the ball is expected to roll. "
-               "Stroke feel is the flat-green distance that gives the same roll speed.")
+    st.caption("Green line: where to aim. Blue curve: where the ball is expected to roll.")
     st.pyplot(trajectory_chart(sol), use_container_width=True)
     if abs(sol["hit_error_ft"]) > 0.15:
         st.warning("The solver could not make this putt drop with the current relief setting. "
                    "Try lowering Green relief or checking the color direction.")
 
 with tab_map:
-    st.caption("Tap the map to place the marker chosen in the sidebar. Black arrows show downhill as the app "
-               "reads it; if they point opposite to the arrows on the map, flip the color setting.")
+    st.caption("Tap the map to place the marker chosen in the sidebar.")
     shown = draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows)
     clicked = streamlit_image_coordinates(shown, key="map_click", width=DISPLAY_WIDTH)
     if clicked and clicked != st.session_state.get("last_click"):
@@ -233,4 +257,3 @@ with tab_map:
         st.write(f"**New read:** {format_feet_inches(sol['aim_offset_ft'])} {sol['aim_side']}   "
                  f"(max break along the path {format_feet_inches(sol['max_break_ft'])})")
         st.write(f"**Old read:** {format_feet_inches(old_off)} {old_side}")
-        st.write("**Break:** " + ("Right-to-Left" if sol["aim_side"] == "Right" else "Left-to-Right"))
