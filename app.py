@@ -5,7 +5,7 @@ from PIL import Image, ImageDraw
 from streamlit_image_coordinates import streamlit_image_coordinates
 import matplotlib.pyplot as plt
 
-# --- 1. CONFIG & SESSION STATE ---
+# --- 1. CONFIG & BULLETPROOF SESSION STATE ---
 st.set_page_config(page_title="CaddyBrain Green Reader", page_icon="⛳", layout="wide")
 
 if "courses_db" not in st.session_state:
@@ -15,10 +15,10 @@ if "courses_db" not in st.session_state:
         }
     }
 
-if "ball_coords" not in st.session_state or not isinstance(st.session_state.ball_coords, dict):
+if "ball_coords" not in st.session_state or not isinstance(st.session_state.ball_coords, dict) or "x_ft" not in st.session_state.ball_coords:
     st.session_state.ball_coords = {"x_ft": 7.0, "y_ft": 4.0}
 
-if "hole_coords" not in st.session_state or not isinstance(st.session_state.hole_coords, dict):
+if "hole_coords" not in st.session_state or not isinstance(st.session_state.hole_coords, dict) or "x_ft" not in st.session_state.hole_coords:
     st.session_state.hole_coords = {"x_ft": 7.0, "y_ft": 30.0}
 
 # --- 2. FORMATTER & ENGINE ---
@@ -100,7 +100,6 @@ def calculate_putt_solution(x_ball, y_ball, x_hole, y_hole, max_depth_yds, green
     draw_img = raw_img.copy()
     draw = ImageDraw.Draw(draw_img)
     
-    # If slope_drop is negative, aim is Left (- offset). If positive, aim is Right (+ offset)
     target_x_ft = x_hole - aim_offset_ft if aim_side == "Left" else x_hole + aim_offset_ft
     target_y_ft = y_hole
     tx_px, ty_px = ft_to_pixels(target_x_ft, target_y_ft)
@@ -232,7 +231,6 @@ with tab_dashboard:
     bx, by = st.session_state.ball_coords["x_ft"], st.session_state.ball_coords["y_ft"]
     hx, hy = st.session_state.hole_coords["x_ft"], st.session_state.hole_coords["y_ft"]
     
-    # Correctly position aim coordinate on graph matching Left vs Right direction
     aim_x = hx - aim_ft_val if aim_side == "Left" else hx + aim_ft_val
     
     ax.plot([bx, aim_x], [by, hy], color="#2b5c8f", linewidth=2, label="Aim Line")
@@ -277,7 +275,6 @@ with tab_maps:
     with col_heat:
         st.subheader("🔥 Heat Map Overlay")
         if interactive_display_img and pixels_to_ft_func:
-            # Constrain map display width using container width scaling
             clicked_heat = streamlit_image_coordinates(interactive_display_img, key="heat_map_click", width=400)
             if clicked_heat is not None:
                 cx, cy = pixels_to_ft_func(clicked_heat["x"], clicked_heat["y"])
@@ -292,7 +289,6 @@ with tab_maps:
     with col_cont:
         st.subheader("🗺️ Contour Map Overlay")
         if contour_display_img and pixels_to_ft_func:
-            # Constrain map display width so it doesn't blow past the column boundary
             clicked_cont = streamlit_image_coordinates(contour_display_img, key="contour_map_click", width=400)
             if clicked_cont is not None:
                 cx, cy = pixels_to_ft_func(clicked_cont["x"], clicked_cont["y"])
