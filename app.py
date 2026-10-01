@@ -1,7 +1,7 @@
 import streamlit as st
 import numpy as np
 import os
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 from streamlit_image_coordinates import streamlit_image_coordinates
 
 # --- 1. CONFIG & SESSION STATE ---
@@ -59,12 +59,11 @@ def calculate_putt_solution(x_ball, y_ball, x_hole, y_hole, max_depth_yds, green
         return max(0.0, min(x_ft, green_width_ft)), max(0.0, min(y_ft, max_depth_ft))
 
     straight_dist_ft = np.sqrt((x_hole - x_ball)**2 + (y_hole - y_ball)**2)
-    straight_paces = straight_dist_ft / 3.0
 
     bx_px, by_px = ft_to_pixels(x_ball, y_ball)
     hx_px, hy_px = ft_to_pixels(x_hole, y_hole)
     
-    # Calculate slope drop and break
+    # Calculate slope drop and break offset components
     slope_drop = (y_ball - y_hole) * 0.035 
     aim_offset_ft = slope_drop * (calibrated_stimp / 8.0) * 0.2 * (straight_dist_ft / 10.0)
     aim_side = "Right" if x_ball > x_hole else "Left"
@@ -72,24 +71,48 @@ def calculate_putt_solution(x_ball, y_ball, x_hole, y_hole, max_depth_yds, green
 
     stroke_feel_ft = round(straight_dist_ft * (calibrated_stimp / 8.0), 1)
 
+    # --- SHIFT THE AIM DOT PERPENDICULAR TO THE PUTT LINE ---
+    dx = hx_px - bx_px
+    dy = hy_px - by_px
+    line_len = np.sqrt(dx**2 + dy**2)
+    
+    if line_len > 0:
+        nx, ny = -dy / line_len, dx / line_len
+        shift_sign = -1.0 if aim_side == "Left" else 1.0
+        pixels_per_ft = (box_x_max - box_x_min) / green_width_ft
+        total_pixel_shift = aim_ft_val * pixels_per_ft * shift_sign
+        
+        tx_px = hx_px + int(nx * total_pixel_shift)
+        ty_px = hy_px + int(ny * total_pixel_shift)
+    else:
+        tx_px, ty_px = hx_px, hy_px
+
     # Draw overlays directly on the Heat Map
     draw_img = raw_img.copy()
     draw = ImageDraw.Draw(draw_img)
     
-    target_x_ft = x_hole - aim_offset_ft if aim_side == "Left" else x_hole + aim_offset_ft
-    tx_px, ty_px = ft_to_pixels(target_x_ft, y_hole)
-
     # 1. Direct line (Gray)
     draw.line([(bx_px, by_px), (hx_px, hy_px)], fill="gray", width=3)
     
     # 2. Aim line (Blue)
     draw.line([(bx_px, by_px), (tx_px, ty_px)], fill="#2b5c8f", width=4)
 
-    # 3. Markers: Ball (Blue), Hole (Red), Target (Cyan)
+    # 3. Markers: Ball (Blue), Hole (Red), Target/Aim (Cyan)
     dot_r = 10
     draw.ellipse([bx_px - dot_r, by_px - dot_r, bx_px + dot_r, by_px + dot_r], fill="blue", outline="white", width=2)
     draw.ellipse([hx_px - dot_r, hy_px - dot_r, hx_px + dot_r, hy_px + dot_r], fill="red", outline="white", width=2)
     draw.ellipse([tx_px - 7, ty_px - 7, tx_px + 7, ty_px + 7], fill="cyan", outline="black", width=2)
+    
+    # 4. Aim Text Label next to Aim Dot
+    aim_label_text = f"Aim: {format_feet_inches(aim_ft_val)} {aim_side}"
+    try:
+        font = ImageFont.load_default()
+    except:
+        font = None
+    
+    text_x = tx_px + 12
+    text_y = ty_px - 8
+    draw.text((text_x, text_y), aim_label_text, fill="#1b365d", font=font)
     
     return draw_img, straight_dist_ft, aim_ft_val, aim_side, stroke_feel_ft, pixels_to_ft, slope_drop
 
