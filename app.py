@@ -44,16 +44,17 @@ def load_heat_map(path):
 
 
 @st.cache_data
-def get_slope(path, width_ft, depth_ft, red_is_high, relief_ft, ignore_edge):
+def get_slope(path, width_ft, depth_ft, red_is_high, relief_ft, ignore_edge, use_arrows, arrow_trust, double_boost):
     img = load_heat_map(path)
     geom = pe.make_geom(img.width, img.height, width_ft, depth_ft)
-    sx, sy, meta = pe.build_slope_field(np.array(img), geom, red_is_high, relief_ft, ignore_outline=ignore_edge)
+    sx, sy, meta = pe.build_slope_field(np.array(img), geom, red_is_high, relief_ft, ignore_outline=ignore_edge,
+                                        use_arrows=use_arrows, arrow_trust=arrow_trust, double_boost=double_boost)
     return sx, sy, meta
 
 
 @st.cache_data
-def get_solution(path, width_ft, depth_ft, red_is_high, relief_ft, ignore_edge, ball, hole, stimp, past_ft):
-    sx, sy, meta = get_slope(path, width_ft, depth_ft, red_is_high, relief_ft, ignore_edge)
+def get_solution(path, width_ft, depth_ft, slope_args, ball, hole, stimp, past_ft):
+    sx, sy, meta = get_slope(path, width_ft, depth_ft, *slope_args)
     return pe.solve_putt(ball, hole, sx, sy, meta, stimp, past_ft)
 
 
@@ -75,7 +76,7 @@ def classic_read(img, geom, ball, hole, stimp):
     return off, side
 
 
-def draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows, show_ignored=False):
+def draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows, show_ignored=False, show_detected=False):
     out = img.copy()
     if show_ignored and meta["ignored"].any():     # tint what the slope reader is skipping
         m = np.kron(meta["ignored"], np.ones((meta["step"], meta["step"]), bool))
@@ -89,7 +90,7 @@ def draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows, sho
         for py in range(int(geom["box_y_bottom"] - geom["box_height"]), int(geom["box_y_bottom"]), step):
             for px in range(int(geom["box_x_min"]), int(geom["box_x_max"]), step):
                 gx, gy = int(px / meta["step"]), int(py / meta["step"])
-                if gy >= sx.shape[0] or gx >= sx.shape[1]:
+                if gy >= sx.shape[0] or gx >= sx.shape[1] or meta["ignored"][gy, gx]:
                     continue
                 vx, vy = -sx[gy, gx], sy[gy, gx]       # downhill in pixel space (rows grow downward)
                 mag = np.hypot(vx, vy)
@@ -101,6 +102,13 @@ def draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows, sho
                 d.line([(px, py), (ex, ey)], fill="black", width=2)
                 d.polygon([(ex, ey), (ex - ux * 7 - uy * 4, ey - uy * 7 + ux * 4),
                            (ex - ux * 7 + uy * 4, ey - uy * 7 - ux * 4)], fill="black")
+    if show_detected:   # arrows the app found on the map: orange = single head, magenta = double head
+        for ar in meta["arrows"]:
+            c, u = np.array(ar["c"]), np.array(ar["u"])
+            col = (255, 140, 0) if ar["strength"] < 2 else (200, 0, 200)
+            tail, tip = c - u * 7, c + u * 7
+            d.line([tuple(tail), tuple(tip)], fill=col, width=2)
+            d.ellipse([tip[0] - 3, tip[1] - 3, tip[0] + 3, tip[1] + 3], fill=col)
     b, h = pe.ft_to_px(geom, *ball), pe.ft_to_px(geom, *hole)
     a = pe.ft_to_px(geom, *sol["aim_point_ft"])
     curve = [pe.ft_to_px(geom, *p) for p in sol["path_world"][::3]]
@@ -157,7 +165,13 @@ width_yds = st.session_state.courses_db[course][hole_no]["width_yds"]
 
 sb.header("2. Green Speed & Slope")
 stimp = sb.slider("Stimp", 6.0, 13.0, 8.0, 0.5)
-color_scale = sb.selectbox("Heat map colors", ["Red = high ground", "Red = low ground (flip)"])
+color_scale = sb.selectbox("Heat map colors", ["Auto (from arrows)", "Red = high ground", "Red = low ground (flip)"])
+use_arrows = sb.checkbox("Use the arrows printed on the map", value=True,
+                         help="Arrows set the break direction; double-head arrows make the slope steeper.")
+arrow_trust = sb.slider("Arrow trust", 0.0, 1.0, 0.7, 0.05,
+                        help="0 = colors only for direction, 1 = follow the arrows wherever they are.")
+double_boost = sb.slider("Double-arrow boost", 0.0, 1.0, 0.3, 0.05,
+                         help="Extra steepness where double-head arrows are.")
 relief_ft = sb.slider("Green relief (ft)", 0.3, 4.0, 1.0, 0.1,
                       help="Elevation difference between the coolest and warmest color. "
                            "Raise it if reads look too straight, lower it if they look too curvy.")
@@ -171,6 +185,7 @@ sb.header("3. Marker Mode")
 placement_mode = sb.radio("Click sets:", ["🔴 Hole Position", "🔵 Ball Position"])
 show_arrows = sb.checkbox("Show computed slope arrows", value=True)
 show_ignored = sb.checkbox("Tint ignored edge pixels (magenta)", value=False)
+show_detected = sb.checkbox("Show detected arrows (orange / purple)", value=False)
 if sb.button("Reset Markers"):
     st.session_state.ball_coords = {"x_ft": width_yds * 1.5, "y_ft": 4.0}
     st.session_state.hole_coords = {"x_ft": width_yds * 1.5, "y_ft": 20.0}
@@ -193,14 +208,15 @@ width_ft, depth_ft = width_yds * 3.0, depth_yds * 3.0
 geom = pe.make_geom(img.width, img.height, width_ft, depth_ft)
 ball = (st.session_state.ball_coords["x_ft"], st.session_state.ball_coords["y_ft"])
 hole = (st.session_state.hole_coords["x_ft"], st.session_state.hole_coords["y_ft"])
-red_high = color_scale.startswith("Red = high")
+red_high = None if color_scale.startswith("Auto") else color_scale.startswith("Red = high")
+slope_args = (red_high, relief_ft, ignore_edge, use_arrows, arrow_trust, double_boost)
 
 if np.hypot(hole[0] - ball[0], hole[1] - ball[1]) < 1.0:
     st.info("Ball and hole are less than a foot apart. Move one of them to get a read.")
     st.stop()
 
-sx, sy, meta = get_slope(heat_path, width_ft, depth_ft, red_high, relief_ft, ignore_edge)
-sol = get_solution(heat_path, width_ft, depth_ft, red_high, relief_ft, ignore_edge, ball, hole, stimp, past_ft)
+sx, sy, meta = get_slope(heat_path, width_ft, depth_ft, *slope_args)
+sol = get_solution(heat_path, width_ft, depth_ft, slope_args, ball, hole, stimp, past_ft)
 stroke_ft = round(sol["flat_equiv_ft"], 1)
 factor, severity = pe.classify_break(sol["aim_offset_ft"], sol["dist_ft"])
 cups = sol["aim_offset_ft"] * 12 / pe.CUP_IN
@@ -218,14 +234,14 @@ with tab_traj:
     st.caption("Green line: where to aim. Blue curve: where the ball is expected to roll. "
                "Stroke feel is the flat-green distance that gives the same roll speed.")
     st.pyplot(trajectory_chart(sol), use_container_width=True)
-    if abs(sol["hit_error_ft"]) > 0.15:
+    if not sol["reached"] or abs(sol["hit_error_ft"]) > 0.15:
         st.warning("The solver could not make this putt drop with the current relief setting. "
                    "Try lowering Green relief or checking the color direction.")
 
 with tab_map:
     st.caption("Tap the map to place the marker chosen in the sidebar. Black arrows show downhill as the app "
                "reads it; if they point opposite to the arrows on the map, flip the color setting.")
-    shown = draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows, show_ignored)
+    shown = draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows, show_ignored, show_detected)
     clicked = streamlit_image_coordinates(shown, key="map_click", width=DISPLAY_WIDTH)
     if clicked and clicked != st.session_state.get("last_click"):
         st.session_state.last_click = clicked
@@ -243,3 +259,10 @@ with tab_map:
                  f"(max break along the path {format_feet_inches(sol['max_break_ft'])})")
         st.write(f"**Old read:** {format_feet_inches(old_off)} {old_side}")
         st.write("**Break:** " + ("Right-to-Left" if sol["aim_side"] == "Right" else "Left-to-Right"))
+        if meta["arrows"]:
+            agree = "n/a" if meta["agreement"] is None else f"{meta['agreement'] * 100:.0f}%"
+            st.write(f"**Arrows found:** {len(meta['arrows'])} ({meta['n_double']} double-head)   "
+                     f"**Agree with colors:** {agree}   "
+                     f"**Colors read as:** {'red = high' if meta['red_is_high'] else 'red = low'}")
+        else:
+            st.write("**Arrows found:** none, so this read uses colors only.")
