@@ -45,9 +45,8 @@ def show_tutorial():
         st.session_state.onboarded = True
         st.rerun()
 
-# Trigger tutorial automatically on first app load
 if "onboarded" not in st.session_state:
-    st.session_state.onboarded = True  # Change to False if you want it to pop up fresh on boot
+    st.session_state.onboarded = True
     show_tutorial()
 
 
@@ -72,8 +71,19 @@ def load_heat_map(path):
 @st.cache_data
 def get_slope(path, width_ft, depth_ft, red_is_high, relief_ft):
     img = load_heat_map(path)
+    arr = np.array(img)
+    
+    # Smooth out sharp boundary lines on the outer edge to prevent false cliffs
+    margin = 10
+    if arr.shape[0] > 2 * margin and arr.shape[1] > 2 * margin:
+        for c in range(3):
+            arr[:margin, :, c] = arr[margin, :, c]
+            arr[-margin:, :, c] = arr[-margin:, :, c]
+            arr[:, :margin, c] = arr[:, margin, c]
+            arr[:, -margin:, c] = arr[:, -margin:, c]
+
     geom = pe.make_geom(img.width, img.height, width_ft, depth_ft)
-    sx, sy, meta = pe.build_slope_field(np.array(img), geom, red_is_high, relief_ft)
+    sx, sy, meta = pe.build_slope_field(arr, geom, red_is_high, relief_ft)
     return sx, sy, meta
 
 
@@ -110,7 +120,7 @@ def draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows):
                 gx, gy = int(px / meta["step"]), int(py / meta["step"])
                 if gy >= sx.shape[0] or gx >= sx.shape[1]:
                     continue
-                vx, vy = -sx[gy, gx], sy[gy, gx]
+                vx, vy = -sx[gy, gx], -sy[gy, gx]
                 mag = np.hypot(vx, vy)
                 if mag < 0.004:
                     continue
@@ -219,17 +229,19 @@ if np.hypot(hole[0] - ball[0], hole[1] - ball[1]) < 1.0:
 sx, sy, meta = get_slope(heat_path, width_ft, depth_ft, red_high, relief_ft)
 sol = get_solution(heat_path, width_ft, depth_ft, red_high, relief_ft, ball, hole, stimp, past_ft)
 stroke_ft = round(sol["flat_equiv_ft"], 1)
+putt_dist_ft = round(sol["dist_ft"], 1)
 factor, severity = pe.classify_break(sol["aim_offset_ft"], sol["dist_ft"])
 cups = sol["aim_offset_ft"] * 12 / pe.CUP_IN
 
 tab_traj, tab_map = st.tabs(["Trajectory & Metrics", "Heat Map Inspector"])
 
 with tab_traj:
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     aim_txt = f"{format_feet_inches(sol['aim_offset_ft'])} {sol['aim_side']}" if sol["aim_offset_ft"] > 0.04 else "Straight"
     c1.metric("🎯 Aim Offset", aim_txt, delta=f"~{cups:.1f} cup widths {sol['aim_side'].lower()}", delta_color="off")
-    c2.metric("⚡ Stroke Feel Distance", f"{stroke_ft} ft", delta=f"~{stroke_ft / 3:.1f} paces power", delta_color="off")
-    c3.metric("📈 Effective Break Factor", f"{factor:.2f}x", delta=f"{severity} break severity", delta_color="off")
+    c2.metric("📏 Putt Distance", f"{putt_dist_ft} ft", delta=f"{format_feet_inches(putt_dist_ft)}", delta_color="off")
+    c3.metric("⚡ Stroke Feel Power", f"{stroke_ft} ft", delta=f"~{stroke_ft / 3:.1f} paces power", delta_color="off")
+    c4.metric("📈 Break Severity", f"{severity}", delta=f"{factor:.2f}x factor", delta_color="off")
     st.markdown("---")
     st.subheader("Top-Down Trajectory")
     st.caption("Green line: where to aim. Blue curve: where the ball is expected to roll.")
@@ -239,7 +251,7 @@ with tab_traj:
                    "Try lowering Green relief or checking the color direction.")
 
 with tab_map:
-    st.caption("Tap the map to place the marker chosen in the sidebar.")
+    st.caption("Tap the map to place the marker chosen in the sidebar. Edge clamping active to smooth out border artifacts.")
     shown = draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows)
     clicked = streamlit_image_coordinates(shown, key="map_click", width=DISPLAY_WIDTH)
     if clicked and clicked != st.session_state.get("last_click"):
