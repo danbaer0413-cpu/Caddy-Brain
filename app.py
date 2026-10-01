@@ -10,19 +10,11 @@ from streamlit_image_coordinates import streamlit_image_coordinates
 import putt_engine as pe
 
 # --- 1. CONFIG & SESSION STATE ---
-st.set_page_config(page_title="CaddyBrain Green Reader", page_icon="⛳", layout="wide",
-                   initial_sidebar_state="collapsed")
+st.set_page_config(page_title="CaddyBrain Green Reader", page_icon="⛳", layout="centered")
 
-if "courses_db" not in st.session_state:
-    st.session_state.courses_db = {
-        "Mercer Oaks East": {i: {"max_depth_yds": 28.0, "width_yds": 14.0} for i in range(1, 19)}
-    }
-if "ball_coords" not in st.session_state or not isinstance(st.session_state.ball_coords, dict):
-    st.session_state.ball_coords = {"x_ft": 29.5, "y_ft": 52.1}
-if "hole_coords" not in st.session_state or not isinstance(st.session_state.hole_coords, dict):
-    st.session_state.hole_coords = {"x_ft": 15.1, "y_ft": 23.2}
+COURSES = {"Mercer Oaks East": list(range(1, 19))}   # green size and scale are read from each map automatically
 
-DISPLAY_WIDTH = 420
+DISPLAY_WIDTH = 640
 
 
 # --- 2. HELPERS ---
@@ -44,17 +36,24 @@ def load_heat_map(path):
 
 
 @st.cache_data
-def get_slope(path, width_ft, depth_ft, red_is_high, relief_ft, ignore_edge, use_arrows, arrow_trust, double_boost):
+def get_geom(path):
+    """Scale and origin read from the map itself (yard labels + green outline)."""
+    arr = np.array(load_heat_map(path))
+    return pe.auto_geom(arr) or pe.make_geom(arr.shape[1], arr.shape[0], 42.0, 84.0)
+
+
+@st.cache_data
+def get_slope(path, red_is_high, relief_ft, ignore_edge, use_arrows, arrow_trust, double_boost):
     img = load_heat_map(path)
-    geom = pe.make_geom(img.width, img.height, width_ft, depth_ft)
+    geom = get_geom(path)
     sx, sy, meta = pe.build_slope_field(np.array(img), geom, red_is_high, relief_ft, ignore_outline=ignore_edge,
                                         use_arrows=use_arrows, arrow_trust=arrow_trust, double_boost=double_boost)
     return sx, sy, meta
 
 
 @st.cache_data
-def get_solution(path, width_ft, depth_ft, slope_args, ball, hole, stimp, past_ft):
-    sx, sy, meta = get_slope(path, width_ft, depth_ft, *slope_args)
+def get_solution(path, slope_args, ball, hole, stimp, past_ft):
+    sx, sy, meta = get_slope(path, *slope_args)
     return pe.solve_putt(ball, hole, sx, sy, meta, stimp, past_ft)
 
 
@@ -87,8 +86,8 @@ def draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows, sho
     d = ImageDraw.Draw(out)
     if show_arrows:   # computed downhill arrows, to compare against the arrows printed on the map
         step = 40
-        for py in range(int(geom["box_y_bottom"] - geom["box_height"]), int(geom["box_y_bottom"]), step):
-            for px in range(int(geom["box_x_min"]), int(geom["box_x_max"]), step):
+        for py in range(step // 2, img.height, step):
+            for px in range(step // 2, img.width, step):
                 gx, gy = int(px / meta["step"]), int(py / meta["step"])
                 if gy >= sx.shape[0] or gx >= sx.shape[1] or meta["ignored"][gy, gx]:
                     continue
@@ -110,13 +109,16 @@ def draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows, sho
             d.line([tuple(tail), tuple(tip)], fill=col, width=2)
             d.ellipse([tip[0] - 3, tip[1] - 3, tip[0] + 3, tip[1] + 3], fill=col)
     b, h = pe.ft_to_px(geom, *ball), pe.ft_to_px(geom, *hole)
-    a = pe.ft_to_px(geom, *sol["aim_point_ft"])
-    curve = [pe.ft_to_px(geom, *p) for p in sol["path_world"][::3]]
-    d.line([b, h], fill="gray", width=3)
-    if len(curve) > 1:
-        d.line(curve, fill="#1f6fd1", width=4)
-    d.line([b, a], fill="#1e8e3e", width=3)
-    for pt, col, r in ((b, "blue", 12), (h, "red", 12), (a, "cyan", 8)):
+    marks = [(b, "blue", 12), (h, "red", 12)]
+    if sol is not None:
+        a = pe.ft_to_px(geom, *sol["aim_point_ft"])
+        curve = [pe.ft_to_px(geom, *p) for p in sol["path_world"][::3]]
+        d.line([b, h], fill="gray", width=3)
+        if len(curve) > 1:
+            d.line(curve, fill="#1f6fd1", width=4)
+        d.line([b, a], fill="#1e8e3e", width=3)
+        marks.append((a, "cyan", 8))
+    for pt, col, r in marks:
         d.ellipse([pt[0] - r, pt[1] - r, pt[0] + r, pt[1] + r], fill=col, outline="white", width=2)
     return out
 
@@ -155,92 +157,75 @@ def trajectory_chart(sol):
     return fig
 
 
-# --- 3. SIDEBAR ---
-sb = st.sidebar
-sb.header("1. Course & Hole")
-course = sb.selectbox("Course", list(st.session_state.courses_db.keys()))
-hole_no = sb.selectbox("Hole #", list(st.session_state.courses_db[course].keys()))
-depth_yds = st.session_state.courses_db[course][hole_no]["max_depth_yds"]
-width_yds = st.session_state.courses_db[course][hole_no]["width_yds"]
+# --- 3. PAGE LAYOUT: one page, top to bottom ---
+st.title("⛳ CaddyBrain Green Reader")
+top = st.container()                                   # course, hole, stimp, marker mode
+map_box = st.container()                               # heat map
+tune_box = st.expander("⚙️ Fine-tune the read")        # advanced controls, right under the map
+out_box = st.container()                               # aim point, putt length, how hard to hit it
+chart_box = st.container()                             # trajectory chart
+details_box = st.expander("📍 Details & comparison")
 
-sb.header("2. Green Speed & Slope")
-stimp = sb.slider("Stimp", 6.0, 13.0, 8.0, 0.5)
-color_scale = sb.selectbox("Heat map colors", ["Auto (from arrows)", "Red = high ground", "Red = low ground (flip)"])
-use_arrows = sb.checkbox("Use the arrows printed on the map", value=True,
-                         help="Arrows set the break direction; double-head arrows make the slope steeper.")
-arrow_trust = sb.slider("Arrow trust", 0.0, 1.0, 0.7, 0.05,
-                        help="0 = colors only for direction, 1 = follow the arrows wherever they are.")
-double_boost = sb.slider("Double-arrow boost", 0.0, 1.0, 0.3, 0.05,
-                         help="Extra steepness where double-head arrows are.")
-relief_ft = sb.slider("Green relief (ft)", 0.3, 4.0, 1.0, 0.1,
-                      help="Elevation difference between the coolest and warmest color. "
-                           "Raise it if reads look too straight, lower it if they look too curvy.")
-ignore_edge = sb.checkbox("Ignore green boundary line", value=True,
-                          help="Skips the solid green outline (and everything outside it) so the edge of the map "
-                               "isn't read as a slope.")
-past_ft = sb.slider("Miss-past pace (ft)", 0.5, 3.0, 1.5, 0.25,
-                    help="How far past the hole the ball would stop. Slower pace = more break.")
+with top:
+    c1, c2, c3 = st.columns([2, 1, 2])
+    course = c1.selectbox("Course", list(COURSES.keys()))
+    hole_no = c2.selectbox("Hole", COURSES[course])
+    stimp = c3.slider("Stimp", 6.0, 13.0, 8.0, 0.5)
+    m1, m2 = st.columns([3, 1])
+    placement_mode = m1.radio("Tap the map to set the", ["🔴 Hole", "🔵 Ball"], horizontal=True)
+    m2.write("")
+    reset_markers = m2.button("Reset markers", use_container_width=True)
 
-sb.header("3. Marker Mode")
-placement_mode = sb.radio("Click sets:", ["🔴 Hole Position", "🔵 Ball Position"])
-show_arrows = sb.checkbox("Show computed slope arrows", value=True)
-show_ignored = sb.checkbox("Tint ignored edge pixels (magenta)", value=False)
-show_detected = sb.checkbox("Show detected arrows (orange / purple)", value=False)
-if sb.button("Reset Markers"):
-    st.session_state.ball_coords = {"x_ft": width_yds * 1.5, "y_ft": 4.0}
-    st.session_state.hole_coords = {"x_ft": width_yds * 1.5, "y_ft": 20.0}
-    st.session_state.pop("last_click", None)
-    st.rerun()
+with tune_box:
+    t1, t2 = st.columns(2)
+    color_scale = t1.selectbox("Heat map colors", ["Auto (from arrows)", "Red = high ground", "Red = low ground (flip)"])
+    relief_ft = t2.slider("Green relief (ft)", 0.3, 4.0, 1.0, 0.1,
+                          help="Elevation difference between the coolest and warmest color. "
+                               "Raise it if reads look too straight, lower it if they look too curvy.")
+    arrow_trust = t1.slider("Arrow trust", 0.0, 1.0, 0.7, 0.05,
+                            help="0 = colors only for direction, 1 = follow the arrows wherever they are.")
+    double_boost = t2.slider("Double-arrow boost", 0.0, 1.0, 0.3, 0.05,
+                             help="Extra steepness where double-head arrows are.")
+    past_ft = t1.slider("Miss-past pace (ft)", 0.5, 3.0, 1.5, 0.25,
+                        help="How far past the hole the ball would stop. Slower pace = more break.")
+    use_arrows = t2.checkbox("Use the arrows printed on the map", value=True,
+                             help="Arrows set the break direction; double-head arrows make the slope steeper.")
+    ignore_edge = t2.checkbox("Ignore green boundary line", value=True,
+                              help="Skips the solid green outline (and everything outside it) so the edge of the map "
+                                   "isn't read as a slope.")
+    st.caption("Map overlays")
+    o1, o2, o3 = st.columns(3)
+    show_arrows = o1.checkbox("Computed slope arrows", value=True)
+    show_detected = o2.checkbox("Detected arrows", value=False, help="Orange = single head, purple = double head.")
+    show_ignored = o3.checkbox("Ignored edge pixels", value=False, help="Tinted magenta.")
 
 folder = course.lower().replace(" ", "_")
 heat_path = next((f"assets/{folder}/{n}" for n in (f"{hole_no}_Heat.png", f"{hole_no}_heat.png")
                   if os.path.exists(f"assets/{folder}/{n}")), None)
-
-# --- 4. MAIN ---
-st.title(f"⛳ Hole #{hole_no}")
-
 if not heat_path:
     st.warning(f"Heat map image not found for Hole #{hole_no} in `assets/{folder}/`.")
     st.stop()
 
 img = load_heat_map(heat_path)
-width_ft, depth_ft = width_yds * 3.0, depth_yds * 3.0
-geom = pe.make_geom(img.width, img.height, width_ft, depth_ft)
+geom = get_geom(heat_path)
+if reset_markers or st.session_state.get("marker_key") != (course, hole_no):   # new hole: markers start on this green
+    b0, h0 = pe.default_markers(geom)
+    st.session_state.ball_coords = {"x_ft": b0[0], "y_ft": b0[1]}
+    st.session_state.hole_coords = {"x_ft": h0[0], "y_ft": h0[1]}
+    st.session_state.marker_key = (course, hole_no)
+    st.session_state.pop("last_click", None)
 ball = (st.session_state.ball_coords["x_ft"], st.session_state.ball_coords["y_ft"])
 hole = (st.session_state.hole_coords["x_ft"], st.session_state.hole_coords["y_ft"])
 red_high = None if color_scale.startswith("Auto") else color_scale.startswith("Red = high")
 slope_args = (red_high, relief_ft, ignore_edge, use_arrows, arrow_trust, double_boost)
 
-if np.hypot(hole[0] - ball[0], hole[1] - ball[1]) < 1.0:
-    st.info("Ball and hole are less than a foot apart. Move one of them to get a read.")
-    st.stop()
+too_close = np.hypot(hole[0] - ball[0], hole[1] - ball[1]) < 1.0
+sx, sy, meta = get_slope(heat_path, *slope_args)
+sol = None if too_close else get_solution(heat_path, slope_args, ball, hole, stimp, past_ft)
 
-sx, sy, meta = get_slope(heat_path, width_ft, depth_ft, *slope_args)
-sol = get_solution(heat_path, width_ft, depth_ft, slope_args, ball, hole, stimp, past_ft)
-stroke_ft = round(sol["flat_equiv_ft"], 1)
-factor, severity = pe.classify_break(sol["aim_offset_ft"], sol["dist_ft"])
-cups = sol["aim_offset_ft"] * 12 / pe.CUP_IN
-
-tab_traj, tab_map = st.tabs(["Trajectory & Metrics", "Heat Map Inspector"])
-
-with tab_traj:
-    c1, c2, c3 = st.columns(3)
-    aim_txt = f"{format_feet_inches(sol['aim_offset_ft'])} {sol['aim_side']}" if sol["aim_offset_ft"] > 0.04 else "Straight"
-    c1.metric("🎯 Aim Offset", aim_txt, delta=f"~{cups:.1f} cup widths {sol['aim_side'].lower()}", delta_color="off")
-    c2.metric("⚡ Stroke Feel Distance", f"{stroke_ft} ft", delta=f"~{stroke_ft / 3:.1f} paces power", delta_color="off")
-    c3.metric("📈 Effective Break Factor", f"{factor:.2f}x", delta=f"{severity} break severity", delta_color="off")
-    st.markdown("---")
-    st.subheader("Top-Down Trajectory")
-    st.caption("Green line: where to aim. Blue curve: where the ball is expected to roll. "
-               "Stroke feel is the flat-green distance that gives the same roll speed.")
-    st.pyplot(trajectory_chart(sol), use_container_width=True)
-    if not sol["reached"] or abs(sol["hit_error_ft"]) > 0.15:
-        st.warning("The solver could not make this putt drop with the current relief setting. "
-                   "Try lowering Green relief or checking the color direction.")
-
-with tab_map:
-    st.caption("Tap the map to place the marker chosen in the sidebar. Black arrows show downhill as the app "
-               "reads it; if they point opposite to the arrows on the map, flip the color setting.")
+# heat map (tapping it moves the marker chosen above)
+with map_box:
+    st.subheader(f"Hole #{hole_no}")
     shown = draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows, show_ignored, show_detected)
     clicked = streamlit_image_coordinates(shown, key="map_click", width=DISPLAY_WIDTH)
     if clicked and clicked != st.session_state.get("last_click"):
@@ -250,19 +235,53 @@ with tab_map:
         key = "hole_coords" if "Hole" in placement_mode else "ball_coords"
         st.session_state[key] = {"x_ft": cx, "y_ft": cy}
         st.rerun()
+    if geom["source"] != "yard labels":
+        st.warning("Couldn't find the yard labels on this map, so the scale is an estimate and distances may be off.")
 
-    with st.expander("📍 Coordinates & comparison", expanded=True):
+# the numbers
+with out_box:
+    if sol is None:
+        st.info("Ball and hole are less than a foot apart. Tap the map to move one of them.")
+    else:
+        stroke_ft = sol["flat_equiv_ft"]
+        diff = stroke_ft - sol["dist_ft"]
+        factor, severity = pe.classify_break(sol["aim_offset_ft"], sol["dist_ft"])
+        cups = sol["aim_offset_ft"] * 12 / pe.CUP_IN
+        aim_txt = f"{format_feet_inches(sol['aim_offset_ft'])} {sol['aim_side']}" if sol["aim_offset_ft"] > 0.04 else "Straight"
+        k1, k2, k3 = st.columns(3)
+        k1.metric("🎯 Aim point", aim_txt, delta=f"≈ {cups:.1f} cups {sol['aim_side'].lower()} of the hole", delta_color="off")
+        k2.metric("📏 Putt length", f"{sol['dist_ft']:.1f} ft", delta=f"{sol['dist_ft'] / 3:.1f} yd", delta_color="off")
+        k3.metric("⚡ Hit it like a", f"{stroke_ft:.1f} ft putt", delta=f"{diff:+.1f} ft vs. putt length", delta_color="off")
+        play = "uphill" if diff > 0.3 else "downhill" if diff < -0.3 else "about flat"
+        st.caption(f"{severity} break ({factor:.2f}x), "
+                   f"{'right-to-left' if sol['aim_side'] == 'Right' else 'left-to-right'}, "
+                   f"playing {play}. 'Hit it like' is the flat-green distance that gives the same roll speed.")
+        if not sol["reached"] or abs(sol["hit_error_ft"]) > 0.15:
+            st.warning("The solver could not make this putt drop with the current settings. "
+                       "Try lowering Green relief or checking the color setting.")
+
+# the graph
+with chart_box:
+    if sol is not None:
+        st.subheader("Where to aim and how it breaks")
+        st.caption("Green line: aim line. Blue curve: expected roll. Hole at the top, ball at the bottom.")
+        fig = trajectory_chart(sol)
+        st.pyplot(fig, use_container_width=True)
+        plt.close(fig)
+
+with details_box:
+    st.write(f"**Green:** {geom['width_ft'] / 3:.0f} yd wide x {geom['depth_ft'] / 3:.0f} yd deep, scale read from the "
+             f"map's yard labels. Positions are measured from the green's left edge and the map's 0-yard line.")
+    st.write(f"**Ball:** {ball[0]:.1f} ft, {ball[1]:.1f} ft   **Hole:** {hole[0]:.1f} ft, {hole[1]:.1f} ft")
+    if sol is not None:
         old_off, old_side = classic_read(img, geom, ball, hole, stimp)
-        st.write(f"**Ball:** {ball[0]:.1f} ft, {ball[1]:.1f} ft   **Hole:** {hole[0]:.1f} ft, {hole[1]:.1f} ft   "
-                 f"**Distance:** {sol['dist_ft']:.1f} ft")
         st.write(f"**New read:** {format_feet_inches(sol['aim_offset_ft'])} {sol['aim_side']}   "
                  f"(max break along the path {format_feet_inches(sol['max_break_ft'])})")
         st.write(f"**Old read:** {format_feet_inches(old_off)} {old_side}")
-        st.write("**Break:** " + ("Right-to-Left" if sol["aim_side"] == "Right" else "Left-to-Right"))
-        if meta["arrows"]:
-            agree = "n/a" if meta["agreement"] is None else f"{meta['agreement'] * 100:.0f}%"
-            st.write(f"**Arrows found:** {len(meta['arrows'])} ({meta['n_double']} double-head)   "
-                     f"**Agree with colors:** {agree}   "
-                     f"**Colors read as:** {'red = high' if meta['red_is_high'] else 'red = low'}")
-        else:
-            st.write("**Arrows found:** none, so this read uses colors only.")
+    if meta["arrows"]:
+        agree = "n/a" if meta["agreement"] is None else f"{meta['agreement'] * 100:.0f}%"
+        st.write(f"**Arrows found:** {len(meta['arrows'])} ({meta['n_double']} double-head)   "
+                 f"**Agree with colors:** {agree}   "
+                 f"**Colors read as:** {'red = high' if meta['red_is_high'] else 'red = low'}")
+    else:
+        st.write("**Arrows found:** none, so this read uses colors only.")

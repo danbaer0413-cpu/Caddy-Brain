@@ -11,22 +11,78 @@ CUP_IN = 4.25      # cup diameter, inches
 
 
 # ---------- 0. Geometry: feet <-> image pixels ----------
+# geom: x0, y0 = pixel of (0 ft, 0 ft); ppx, ppy = pixels per foot; xmin/xmax/ymin/ymax_ft = bounds of the green.
 def make_geom(img_w, img_h, width_ft, depth_ft):
-    """Where the green sits inside the heat-map image (same box the original app used)."""
-    return dict(box_x_min=img_w * 0.15, box_x_max=img_w * 0.85, box_y_bottom=img_h * 0.92,
-                box_height=img_h * 0.80, width_ft=width_ft, depth_ft=depth_ft)
+    """Manual geometry (old method): green assumed to fill a fixed box inside the image."""
+    bx0, bx1, by, bh = img_w * 0.15, img_w * 0.85, img_h * 0.92, img_h * 0.80
+    return dict(x0=bx0, y0=by, ppx=(bx1 - bx0) / width_ft, ppy=bh / depth_ft, xmin_ft=0.0, xmax_ft=width_ft,
+                ymin_ft=0.0, ymax_ft=depth_ft, width_ft=width_ft, depth_ft=depth_ft, source="manual")
+
+
+def _label_rows(img_np):
+    """Vertical centres of the yard labels (29, 22, 15, 7, 0, -5 ...) in the left/right margins."""
+    a = img_np.astype(int)
+    H, W, _ = a.shape
+    dark = (a.mean(-1) < 110) & ((a.max(-1) - a.min(-1)) < 60)
+    best = []
+    for x0, x1 in ((0, int(0.14 * W)), (int(0.86 * W), W)):
+        rows = [r for r in np.nonzero(dark[:, x0:x1].sum(1))[0] if r > 0.15 * H]    # skip the header bar
+        groups = []
+        for r in rows:
+            if groups and r - groups[-1][-1] <= 3:
+                groups[-1].append(r)
+            else:
+                groups.append([r])
+        c = [(g[0] + g[-1]) / 2 for g in groups if len(g) >= 6]
+        if len(c) > len(best):
+            best = c
+    return best
+
+
+def auto_geom(img_np):
+    """Work out the scale from the map itself, so no per-hole width or depth is needed.
+
+    The yard labels down the side are evenly spaced and the last one is always -5, i.e. 5 yards below
+    the 0 line, which fixes pixels per yard (refined by rounding the top label to whole yards).
+    x = 0 is the left edge of the green, y = 0 is the map's 0-yard line. Pixels are assumed square.
+    """
+    inside, _ = inside_mask(img_np)
+    ys, xs = np.nonzero(inside)
+    if len(xs) == 0 or inside.all():
+        return None
+    gx0, gx1, gy0, gy1 = xs.min(), xs.max(), ys.min(), ys.max()
+    labels = _label_rows(img_np)
+    source = "yard labels"
+    if len(labels) >= 5:
+        top, y0, ym5 = labels[0], labels[-2], labels[-1]
+        ppy0 = (ym5 - y0) / 5.0                                  # px per yard from the -5 label
+        n_yd = max(1, round((y0 - top) / ppy0))                  # top label is a whole number of yards
+        ppy_yd = (y0 - top) / n_yd
+        if abs(ppy_yd / ppy0 - 1) > 0.15:
+            ppy_yd = ppy0
+    else:
+        source = "estimate"
+        ppy_yd, y0 = (gy1 - gy0) / 28.0, float(gy1)              # assume a 28 yard deep green
+    ppf = ppy_yd / 3.0
+    return dict(x0=float(gx0), y0=float(y0), ppx=ppf, ppy=ppf, xmin_ft=0.0, xmax_ft=(gx1 - gx0) / ppf,
+                ymin_ft=(y0 - gy1) / ppf, ymax_ft=(y0 - gy0) / ppf, width_ft=(gx1 - gx0) / ppf,
+                depth_ft=(gy1 - gy0) / ppf, source=source, px_per_yd=float(ppy_yd))
+
+
+def default_markers(g):
+    """Ball low and centred on the green, hole about two thirds of the way up."""
+    xc = 0.5 * (g["xmin_ft"] + g["xmax_ft"])
+    span = g["ymax_ft"] - g["ymin_ft"]
+    return (xc, g["ymin_ft"] + 0.2 * span), (xc, g["ymin_ft"] + 0.6 * span)
 
 
 def ft_to_px(g, x_ft, y_ft):
-    px = g["box_x_min"] + x_ft / g["width_ft"] * (g["box_x_max"] - g["box_x_min"])
-    py = g["box_y_bottom"] - y_ft / g["depth_ft"] * g["box_height"]
-    return px, py
+    return g["x0"] + x_ft * g["ppx"], g["y0"] - y_ft * g["ppy"]
 
 
 def px_to_ft(g, px, py):
-    x = (px - g["box_x_min"]) / (g["box_x_max"] - g["box_x_min"]) * g["width_ft"]
-    y = (g["box_y_bottom"] - py) / g["box_height"] * g["depth_ft"]
-    return float(np.clip(x, 0, g["width_ft"])), float(np.clip(y, 0, g["depth_ft"]))
+    x, y = (px - g["x0"]) / g["ppx"], (g["y0"] - py) / g["ppy"]
+    return float(np.clip(x, g["xmin_ft"], g["xmax_ft"])), float(np.clip(y, g["ymin_ft"], g["ymax_ft"]))
 
 
 # ---------- 1. Image -> slope field ----------
@@ -83,7 +139,12 @@ def inside_mask(img_np):
     inside = ~outside & ~line
     if inside.mean() < 0.08:                      # outline isn't closed; don't trust the flood fill
         return ~line, line
-    return inside, line
+    ic = inside[:h // k * k, :w // k * k].reshape(h // k, k, w // k, k).min((1, 3))
+    best = max(_label(ic), key=len)               # the putting surface is the largest enclosed region
+    keep = np.zeros(ic.shape, bool)
+    keep[best[:, 1].astype(int), best[:, 0].astype(int)] = True
+    keep = np.pad(np.kron(keep, np.ones((k, k), bool)), ((0, h - keep.shape[0] * k), (0, w - keep.shape[1] * k)), mode="edge")
+    return inside & keep, line
 
 
 def _label(mask):
@@ -215,8 +276,7 @@ def build_slope_field(img_np, geom, red_is_high=None, relief_ft=1.0, step=4, ign
     ok = ~ignored if (~ignored).any() else np.ones_like(ignored)
     h = np.clip((h - h[ok].min()) / max(1e-6, h[ok].max() - h[ok].min()), 0, 1) * relief_ft   # red = high
 
-    ppx = (geom["box_x_max"] - geom["box_x_min"]) / geom["width_ft"]     # px per ft, x
-    ppy = geom["box_height"] / geom["depth_ft"]                          # px per ft, y
+    ppx, ppy = geom["ppx"], geom["ppy"]                                  # px per ft
     dh_dpy, dh_dpx = np.gradient(h, step, step)
     cx_, cy_ = dh_dpx * ppx, -dh_dpy * ppy                # uphill gradient, feet space (red = high)
 
@@ -267,8 +327,8 @@ def build_slope_field(img_np, geom, red_is_high=None, relief_ft=1.0, step=4, ign
 def _sample(meta, x, y):
     """Bilinear lookup of the (sx, sy) slope pair at a position in feet."""
     field = meta["field"]
-    px = meta["box_x_min"] + x / meta["width_ft"] * (meta["box_x_max"] - meta["box_x_min"])
-    py = meta["box_y_bottom"] - y / meta["depth_ft"] * meta["box_height"]
+    px = meta["x0"] + x * meta["ppx"]
+    py = meta["y0"] - y * meta["ppy"]
     gx = np.clip(px / meta["step"] - 0.5, 0, field.shape[1] - 1.001)
     gy = np.clip(py / meta["step"] - 0.5, 0, field.shape[0] - 1.001)
     x0, y0 = int(gx), int(gy)
