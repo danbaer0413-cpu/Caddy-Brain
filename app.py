@@ -103,13 +103,14 @@ def calculate_putt_solution(x_ball, y_ball, x_hole, y_hole, max_depth_yds, green
     slope_drop = (sum(sample_breaks) / len(sample_breaks)) * gradient_multiplier if sample_breaks else 0.0
 
     aim_offset_ft = slope_drop * (calibrated_stimp / 8.0) * 0.15 * straight_dist_ft
-    aim_side = "Left" if slope_drop < 0 else "Right"
+    aim_side = "Right" if slope_drop >= 0 else "Left"
     aim_ft_val = abs(aim_offset_ft)
 
     elevation_speed_adj = abs(slope_drop) * 0.2
     recommended_speed_paces = straight_paces * (8.0 / calibrated_stimp) + elevation_speed_adj + 0.2
     recommended_speed_paces = max(1.0, round(recommended_speed_paces, 1))
 
+    # --- DRAW OVERLAYS ON HEAT MAP IMAGE ---
     draw_img = raw_img.copy()
     draw = ImageDraw.Draw(draw_img)
     
@@ -117,6 +118,10 @@ def calculate_putt_solution(x_ball, y_ball, x_hole, y_hole, max_depth_yds, green
     target_y_ft = y_hole
     tx_px, ty_px = ft_to_pixels(target_x_ft, target_y_ft)
 
+    # Draw direct line (gray dashed) from ball to hole
+    draw.line([(bx_px, by_px), (hx_px, hy_px)], fill="gray", width=3)
+
+    # Draw curving trajectory line
     dx_line = hx_px - bx_px
     dy_line = hy_px - by_px
     line_len = np.sqrt(dx_line**2 + dy_line**2)
@@ -135,12 +140,16 @@ def calculate_putt_solution(x_ball, y_ball, x_hole, y_hole, max_depth_yds, green
         
     for i in range(len(curve_points) - 1):
         if i % 2 == 0:
-            draw.line([curve_points[i], curve_points[i+1]], fill="yellow", width=4)
+            draw.line([curve_points[i], curve_points[i+1]], fill="#2e7d32", width=5)
     
-    dot_r = 7
+    # Draw aim line from ball to target
+    draw.line([(bx_px, by_px), (tx_px, ty_px)], fill="#2b5c8f", width=4)
+
+    # Markers: Ball (blue), Hole (red), Target (cyan)
+    dot_r = 9
     draw.ellipse([bx_px - dot_r, by_px - dot_r, bx_px + dot_r, by_px + dot_r], fill="blue", outline="white", width=2)
     draw.ellipse([hx_px - dot_r, hy_px - dot_r, hx_px + dot_r, hy_px + dot_r], fill="red", outline="white", width=2)
-    draw.ellipse([tx_px - (dot_r-1), ty_px - (dot_r-1), tx_px + (dot_r-1), ty_px + (dot_r-1)], fill="cyan", outline="black", width=2)
+    draw.ellipse([tx_px - (dot_r-2), ty_px - (dot_r-2), tx_px + (dot_r-2), ty_px + (dot_r-2)], fill="cyan", outline="black", width=2)
     
     return draw_img, straight_dist_ft, aim_ft_val, aim_side, recommended_speed_paces, pixels_to_ft, slope_drop
 
@@ -175,19 +184,19 @@ base_img_path = heat_path if heat_path else contour_path
 # Execute Engine
 straight_dist_ft = aim_ft_val = speed_paces = slope_drop = 0.0
 aim_side = "Right"
-interactive_display_img = None
+annotated_heat_img = None
 contour_display_img = None
 pixels_to_ft_func = None
 max_depth_yds = saved_depth
 green_width_yds = saved_width
-DISPLAY_WIDTH = 650  # Enlarged width for precision clicking
+DISPLAY_WIDTH = 650  
 
 if base_img_path:
     try:
         raw_img = Image.open(base_img_path).convert("RGB")
         cont_img = Image.open(contour_path).convert("RGB") if contour_path and os.path.exists(contour_path) else None
         
-        annotated_img, straight_dist_ft, aim_ft_val, aim_side, speed_paces, pixels_to_ft_func, slope_drop = calculate_putt_solution(
+        annotated_heat, straight_dist_ft, aim_ft_val, aim_side, speed_paces, pixels_to_ft_func, slope_drop = calculate_putt_solution(
             x_ball=st.session_state.ball_coords["x_ft"],
             y_ball=st.session_state.ball_coords["y_ft"],
             x_hole=st.session_state.hole_coords["x_ft"],
@@ -200,23 +209,10 @@ if base_img_path:
             slope_steepness="Standard Slope (Single Arrow)",
             display_width=DISPLAY_WIDTH
         )
-        interactive_display_img = annotated_img
+        annotated_heat_img = annotated_heat
         
         if cont_img:
-            cont_annotated, _, _, _, _, _, _ = calculate_putt_solution(
-                x_ball=st.session_state.ball_coords["x_ft"],
-                y_ball=st.session_state.ball_coords["y_ft"],
-                x_hole=st.session_state.hole_coords["x_ft"],
-                y_hole=st.session_state.hole_coords["y_ft"],
-                max_depth_yds=saved_depth,
-                green_width_ft=saved_width * 3.0,
-                calibrated_stimp=calibrated_stimp,
-                raw_img=cont_img,
-                contour_img=None,
-                slope_steepness="Standard Slope (Single Arrow)",
-                display_width=DISPLAY_WIDTH
-            )
-            contour_display_img = cont_annotated
+            contour_display_img = cont_img
     except Exception as e:
         st.warning(f"Error loading maps: {e}")
 
@@ -237,7 +233,8 @@ with tab_dashboard:
         st.metric(label="🎯 Aim Offset", value=aim_str, delta=f"~{cup_widths} cup widths {aim_side.lower()}")
     with c2:
         stroke_feel_ft = round(straight_dist_ft * (calibrated_stimp / 8.0), 1)
-        st.metric(label="⚡ Stroke Feel Distance", value=f"{stroke_feel_ft} ft", delta=f"~{speed_paces} paces power")
+        stroke_power_paces = round(stroke_feel_ft / 3.0, 1)
+        st.metric(label="⚡ Stroke Feel Distance", value=f"{stroke_feel_ft} ft", delta=f"~{stroke_power_paces} paces stroke power")
     with c3:
         break_severity = "Severe break" if abs(slope_drop) > 1.0 else "Moderate break severity"
         st.metric(label="📈 Effective Break Factor", value=f"{1.0 + abs(slope_drop):.2f}x", delta=break_severity)
@@ -245,6 +242,7 @@ with tab_dashboard:
     st.markdown("---")
     st.subheader("Top-Down Trajectory Visualizer *(Aim Line vs True Curve)*")
     
+    # Detailed Graph Matching Your Reference Layout
     fig, ax = plt.subplots(figsize=(9, 4.5))
     ax.set_xticks(np.arange(0, green_width_yds * 3.0 + 3, 2))
     ax.set_yticks(np.arange(0, 60, 5))
@@ -255,17 +253,22 @@ with tab_dashboard:
     
     aim_x = hx - aim_ft_val if aim_side == "Left" else hx + aim_ft_val
     
+    # 1. Direct Line (Ball to Hole)
+    ax.plot([bx, hx], [by, hy], color="gray", linestyle=":", linewidth=1.5, label="Direct Line")
+    
+    # 2. Aim Line
     ax.plot([bx, aim_x], [by, hy], color="#2b5c8f", linewidth=2, label="Aim Line")
     ax.scatter([aim_x], [hy], color="#2b5c8f", s=60, zorder=5)
-    ax.text(aim_x, hy + 1.5, f"Aim ({format_feet_inches(aim_ft_val)})", color="#2b5c8f", fontweight="bold", ha="center")
+    ax.text(aim_x - 0.5 if aim_side=="Left" else aim_x + 0.5, hy + 1.2, f"Aim ({format_feet_inches(aim_ft_val)})", color="#2b5c8f", fontweight="bold", ha="center")
     
+    # 3. Projected True Curve
     t_vals = np.linspace(0, 1, 50)
-    curve_direction_factor = -1.0 if aim_side == "Left" else 1.0
-    curve_x = (1 - t_vals)**2 * bx + 2 * (1 - t_vals) * t_vals * ((bx + hx)/2 + curve_direction_factor * abs(slope_drop)*2.5) + t_vals**2 * hx
+    curve_dir_multiplier = -1.0 if aim_side == "Left" else 1.0
+    curve_x = (1 - t_vals)**2 * bx + 2 * (1 - t_vals) * t_vals * ((bx + hx)/2 + curve_dir_multiplier * abs(slope_drop)*2.5) + t_vals**2 * hx
     curve_y = (1 - t_vals)**2 * by + 2 * (1 - t_vals) * t_vals * (by + hy)/2 + t_vals**2 * hy
-    ax.plot(curve_x, curve_y, color="#2e7d32", linewidth=3.5, label="True Curve")
+    ax.plot(curve_x, curve_y, color="#2e7d32", linewidth=3.5, label="Projected Break Curve")
     
-    ax.plot([hx, hx], [by, hy], color="gray", linestyle=":", linewidth=1.5)
+    # 4. Ball & Hole Markers
     ax.scatter([bx], [by], color="black", s=80, zorder=6, label="Ball")
     ax.scatter([hx], [hy], color="black", s=80, zorder=6, label="Hole")
     
@@ -275,7 +278,7 @@ with tab_dashboard:
     fig.patch.set_facecolor("white")
     
     st.pyplot(fig)
-    st.caption(f"Calculated for a {round(straight_dist_ft, 1)} ft putt with Stimp {calibrated_stimp:.1f}.")
+    st.caption(f"{round(straight_dist_ft, 1)} ft Putt ({stroke_feel_ft} ft stroke feel) with Stimp {calibrated_stimp:.1f}.")
 
 with tab_heat:
     col_ctrl, col_heat_img = st.columns([1.2, 2.2])
@@ -295,9 +298,9 @@ with tab_heat:
         st.markdown(f"**Current Hole:** `X: {st.session_state.hole_coords['x_ft']:.1f}ft, Y: {st.session_state.hole_coords['y_ft']:.1f}ft`")
 
     with col_heat_img:
-        st.subheader("🔥 Interactive Heat Map")
-        if interactive_display_img and pixels_to_ft_func:
-            clicked_heat = streamlit_image_coordinates(interactive_display_img, key="heat_map_click", width=DISPLAY_WIDTH)
+        st.subheader("🔥 Heat Map with Projected Trajectory")
+        if annotated_heat_img and pixels_to_ft_func:
+            clicked_heat = streamlit_image_coordinates(annotated_heat_img, key="heat_map_click", width=DISPLAY_WIDTH)
             if clicked_heat is not None:
                 cx, cy = pixels_to_ft_func(clicked_heat["x"], clicked_heat["y"])
                 if "Hole" in placement_mode:
