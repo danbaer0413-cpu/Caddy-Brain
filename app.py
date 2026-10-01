@@ -73,17 +73,21 @@ def get_slope(path, width_ft, depth_ft, red_is_high, relief_ft):
     img = load_heat_map(path)
     arr = np.array(img)
     
-    # Smooth out sharp boundary lines on the outer edge safely using single-pixel assignments
-    margin = 10
-    if arr.shape[0] > 2 * margin and arr.shape[1] > 2 * margin:
-        for i in range(margin):
-            arr[:, i, :] = arr[:, margin, :]
-            arr[:, -(i+1), :] = arr[:, -(margin+1), :]
-            arr[i, :, :] = arr[margin, :, :]
-            arr[-(i+1), :, :] = arr[-(margin+1), :, :]
-
     geom = pe.make_geom(img.width, img.height, width_ft, depth_ft)
     sx, sy, meta = pe.build_slope_field(arr, geom, red_is_high, relief_ft)
+    
+    # Flatten slope to zero along the outer border margin to prevent edge cliff artifacts
+    margin_px = int(12 / meta["step"]) if "step" in meta else 10
+    if sx.shape[0] > 2 * margin_px and sx.shape[1] > 2 * margin_px:
+        sx[:margin_px, :] = 0
+        sx[-margin_px:, :] = 0
+        sx[:, :margin_px] = 0
+        sx[:, -margin_px:] = 0
+        sy[:margin_px, :] = 0
+        sy[-margin_px:, :] = 0
+        sy[:, :margin_px] = 0
+        sy[:, -margin_px:] = 0
+
     return sx, sy, meta
 
 
@@ -251,7 +255,7 @@ with tab_traj:
                    "Try lowering Green relief or checking the color direction.")
 
 with tab_map:
-    st.caption("Tap the map to place the marker chosen in the sidebar.")
+    st.caption("Tap the map to place the marker chosen in the sidebar. Outer border slope flattened to zero.")
     shown = draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows)
     clicked = streamlit_image_coordinates(shown, key="map_click", width=DISPLAY_WIDTH)
     if clicked and clicked != st.session_state.get("last_click"):
@@ -267,5 +271,5 @@ with tab_map:
         st.write(f"**Ball:** {ball[0]:.1f} ft, {ball[1]:.1f} ft   **Hole:** {hole[0]:.1f} ft, {hole[1]:.1f} ft   "
                  f"**Distance:** {sol['dist_ft']:.1f} ft")
         st.write(f"**New read:** {format_feet_inches(sol['aim_offset_ft'])} {sol['aim_side']}   "
-                 f"(max break along the path {format_feet_inches(sol['max_break_ft'])})")
+                 f"(max break along the path {format_feet_inches(sol['max_break_ft'])} )")
         st.write(f"**Old read:** {format_feet_inches(old_off)} {old_side}")
