@@ -63,11 +63,38 @@ def calculate_putt_solution(x_ball, y_ball, x_hole, y_hole, max_depth_yds, green
     bx_px, by_px = ft_to_pixels(x_ball, y_ball)
     hx_px, hy_px = ft_to_pixels(x_hole, y_hole)
     
-    # Calculate slope drop and break offset components
+    # --- AUTOMATIC SLOPE & BREAK SAMPLING FROM IMAGE ---
+    # Sample pixels along the direct line between ball and hole to read background color gradient (Red vs Blue intensity)
+    img_np = np.array(raw_img)
+    num_samples = 10
+    sample_x = np.linspace(bx_px, hx_px, num_samples).astype(int)
+    sample_y = np.linspace(by_px, hy_px, num_samples).astype(int)
+    
+    red_bias = 0
+    blue_bias = 0
+    for sx, sy in zip(sample_x, sample_y):
+        if 0 <= sy < img_np.shape[0] and 0 <= sx < img_np.shape[1]:
+            r, g, b = img_np[sy, sx][:3]
+            # Red channel dominance vs Blue channel dominance indicates slope orientation
+            red_bias += int(r) - int((g + b) / 2)
+            blue_bias += int(b) - int((r + g) / 2)
+
+    # Automatically derive cross-slope break direction from image color gradients and positional geometry
+    geometric_side = "Right" if x_ball > x_hole else "Left"
+    
+    # If the sampled image color trend opposes the geometric side, auto-correct the break
+    if red_bias > blue_bias and x_ball <= x_hole:
+        detected_side = "Right"
+    elif blue_bias > red_bias and x_ball >= x_hole:
+        detected_side = "Left"
+    else:
+        detected_side = geometric_side
+
+    # Calculate slope drop and magnitude
     slope_drop = (y_ball - y_hole) * 0.035 
-    aim_offset_ft = slope_drop * (calibrated_stimp / 8.0) * 0.2 * (straight_dist_ft / 10.0)
-    aim_side = "Right" if x_ball > x_hole else "Left"
-    aim_ft_val = abs(aim_offset_ft)
+    aim_offset_ft = abs(slope_drop * (calibrated_stimp / 8.0) * 0.2 * (straight_dist_ft / 10.0))
+    aim_side = detected_side
+    aim_ft_val = aim_offset_ft
 
     stroke_feel_ft = round(straight_dist_ft * (calibrated_stimp / 8.0), 1)
 
