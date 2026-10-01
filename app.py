@@ -16,7 +16,6 @@ if "courses_db" not in st.session_state:
         }
     }
 
-# Bulletproof initialization / structural repair for coordinates
 if "ball_coords" not in st.session_state or not isinstance(st.session_state.ball_coords, dict) or "x_ft" not in st.session_state.ball_coords or "y_ft" not in st.session_state.ball_coords:
     st.session_state.ball_coords = {"x_ft": 7.0, "y_ft": 4.0}
 
@@ -39,19 +38,26 @@ def format_feet_inches(total_feet):
     result_str = f"{ft} ft {inches} in"
     return f"-{result_str}" if negative else result_str
 
-def calculate_putt_solution(x_ball, y_ball, x_hole, y_hole, max_depth_yds, green_width_ft, calibrated_stimp, raw_img, contour_img, slope_steepness):
-    img_w, img_h = raw_img.size
-    box_x_min, box_x_max = img_w * 0.15, img_w * 0.85
-    box_y_bottom = img_h * 0.92
-    box_height = img_h * 0.80
+def calculate_putt_solution(x_ball, y_ball, x_hole, y_hole, max_depth_yds, green_width_ft, calibrated_stimp, raw_img, contour_img, slope_steepness, display_width=650):
+    orig_w, orig_h = raw_img.size
+    
+    # Scale factor from displayed component width back to original high-res image dimensions
+    scale = orig_w / float(display_width)
+
+    box_x_min, box_x_max = orig_w * 0.15, orig_w * 0.85
+    box_y_bottom = orig_h * 0.92
+    box_height = orig_h * 0.80
     
     def ft_to_pixels(x_ft, y_ft):
         max_depth_ft = max_depth_yds * 3.0
         px = box_x_min + (x_ft / green_width_ft) * (box_x_max - box_x_min)
         py = box_y_bottom - (y_ft / max_depth_ft) * box_height
-        return int(max(0, min(px, img_w - 1))), int(max(0, min(py, img_h - 1)))
+        return int(max(0, min(px, orig_w - 1))), int(max(0, min(py, orig_h - 1)))
 
-    def pixels_to_ft(px, py):
+    def pixels_to_ft(display_px, display_py):
+        px = display_px * scale
+        py = display_py * scale
+        
         max_depth_ft = max_depth_yds * 3.0
         x_ft = ((px - box_x_min) / (box_x_max - box_x_min)) * green_width_ft
         y_ft = ((box_y_bottom - py) / box_height) * max_depth_ft
@@ -72,7 +78,7 @@ def calculate_putt_solution(x_ball, y_ball, x_hole, y_hole, max_depth_yds, green
         chk_y = by_px + t_val * (hy_px - by_px)
         
         left_p = (int(max(0, chk_x - sample_offset)), int(chk_y))
-        right_p = (int(min(img_w - 1, chk_x + sample_offset)), int(chk_y))
+        right_p = (int(min(orig_w - 1, chk_x + sample_offset)), int(chk_y))
         
         try:
             h_left = raw_img.getpixel(left_p)
@@ -174,6 +180,7 @@ contour_display_img = None
 pixels_to_ft_func = None
 max_depth_yds = saved_depth
 green_width_yds = saved_width
+DISPLAY_WIDTH = 650  # Enlarged width for precision clicking
 
 if base_img_path:
     try:
@@ -190,7 +197,8 @@ if base_img_path:
             calibrated_stimp=calibrated_stimp,
             raw_img=raw_img,
             contour_img=cont_img,
-            slope_steepness="Standard Slope (Single Arrow)"
+            slope_steepness="Standard Slope (Single Arrow)",
+            display_width=DISPLAY_WIDTH
         )
         interactive_display_img = annotated_img
         
@@ -205,7 +213,8 @@ if base_img_path:
                 calibrated_stimp=calibrated_stimp,
                 raw_img=cont_img,
                 contour_img=None,
-                slope_steepness="Standard Slope (Single Arrow)"
+                slope_steepness="Standard Slope (Single Arrow)",
+                display_width=DISPLAY_WIDTH
             )
             contour_display_img = cont_annotated
     except Exception as e:
@@ -214,7 +223,11 @@ if base_img_path:
 # --- 4. MAIN INTERFACE TABS ---
 st.title(f"⛳ Hole #{selected_hole} ({selected_course})")
 
-tab_dashboard, tab_maps = st.tabs(["📊 Trajectory & Metrics Dashboard", "🗺 Dual-Map Green Inspector"])
+tab_dashboard, tab_heat, tab_contour = st.tabs([
+    "📊 Trajectory & Metrics Dashboard", 
+    "🔥 Interactive Heat Map", 
+    "🗺️ Contour"
+])
 
 with tab_dashboard:
     c1, c2, c3 = st.columns(3)
@@ -264,8 +277,8 @@ with tab_dashboard:
     st.pyplot(fig)
     st.caption(f"Calculated for a {round(straight_dist_ft, 1)} ft putt with Stimp {calibrated_stimp:.1f}.")
 
-with tab_maps:
-    col_ctrl, col_heat, col_cont = st.columns([1.2, 1.4, 1.4])
+with tab_heat:
+    col_ctrl, col_heat_img = st.columns([1.2, 2.2])
     
     with col_ctrl:
         st.subheader("Marker Controls")
@@ -281,10 +294,10 @@ with tab_maps:
         st.markdown(f"**Current Ball:** `X: {st.session_state.ball_coords['x_ft']:.1f}ft, Y: {st.session_state.ball_coords['y_ft']:.1f}ft`")
         st.markdown(f"**Current Hole:** `X: {st.session_state.hole_coords['x_ft']:.1f}ft, Y: {st.session_state.hole_coords['y_ft']:.1f}ft`")
 
-    with col_heat:
-        st.subheader("🔥 Heat Map (Interactive)")
+    with col_heat_img:
+        st.subheader("🔥 Interactive Heat Map")
         if interactive_display_img and pixels_to_ft_func:
-            clicked_heat = streamlit_image_coordinates(interactive_display_img, key="heat_map_click", width=380)
+            clicked_heat = streamlit_image_coordinates(interactive_display_img, key="heat_map_click", width=DISPLAY_WIDTH)
             if clicked_heat is not None:
                 cx, cy = pixels_to_ft_func(clicked_heat["x"], clicked_heat["y"])
                 if "Hole" in placement_mode:
@@ -295,9 +308,9 @@ with tab_maps:
         else:
             st.info("Heat map asset not found.")
 
-    with col_cont:
-        st.subheader("🗺️ Contour Map Reference")
-        if contour_display_img:
-            st.image(contour_display_img, width=380)
-        else:
-            st.info("Contour map asset not found.")
+with tab_contour:
+    st.subheader(f"🗺️ Contour Map — Hole #{selected_hole}")
+    if contour_display_img:
+        st.image(contour_display_img, width=DISPLAY_WIDTH)
+    else:
+        st.info("Contour map asset not found for this hole.")
