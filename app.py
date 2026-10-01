@@ -5,7 +5,12 @@ from PIL import Image, ImageDraw, ImageFont
 from streamlit_image_coordinates import streamlit_image_coordinates
 
 # --- 1. CONFIG & SESSION STATE ---
-st.set_page_config(page_title="CaddyBrain Green Reader", page_icon="⛳", layout="wide")
+st.set_page_config(
+    page_title="CaddyBrain Green Reader", 
+    page_icon="⛳", 
+    layout="wide",
+    initial_sidebar_state="collapsed" # Collapsed by default on mobile for more map space
+)
 
 if "courses_db" not in st.session_state:
     st.session_state.courses_db = {
@@ -20,7 +25,11 @@ if "ball_coords" not in st.session_state or not isinstance(st.session_state.ball
 if "hole_coords" not in st.session_state or not isinstance(st.session_state.hole_coords, dict):
     st.session_state.hole_coords = {"x_ft": 15.1, "y_ft": 23.2}
 
-# --- 2. FORMATTER & ENGINE ---
+# --- 2. CACHED HELPERS FOR MOBILE PERFORMANCE ---
+@st.cache_data
+def load_heat_map(path):
+    return Image.open(path).convert("RGB")
+
 def format_feet_inches(total_feet):
     negative = total_feet < 0
     total_feet = abs(total_feet)
@@ -36,7 +45,7 @@ def format_feet_inches(total_feet):
     result_str = f"{ft} ft {inches} in"
     return f"-{result_str}" if negative else result_str
 
-def calculate_putt_solution(x_ball, y_ball, x_hole, y_hole, max_depth_yds, green_width_ft, calibrated_stimp, break_mode, raw_img, display_width=600):
+def calculate_putt_solution(x_ball, y_ball, x_hole, y_hole, max_depth_yds, green_width_ft, calibrated_stimp, break_mode, raw_img, display_width=400):
     orig_w, orig_h = raw_img.size
     scale = orig_w / float(display_width)
 
@@ -63,9 +72,9 @@ def calculate_putt_solution(x_ball, y_ball, x_hole, y_hole, max_depth_yds, green
     bx_px, by_px = ft_to_pixels(x_ball, y_ball)
     hx_px, hy_px = ft_to_pixels(x_hole, y_hole)
     
-    # --- ADVANCED IMAGE SAMPLING FOR GRADIENT & BREAK ---
+    # --- LIGHTWEIGHT IMAGE SAMPLING FOR MOBILE EFFICIENCY ---
     img_np = np.array(raw_img)
-    num_samples = 15
+    num_samples = 10  # Optimized sample count for quick mobile rendering
     sample_x = np.linspace(bx_px, hx_px, num_samples).astype(int)
     sample_y = np.linspace(by_px, hy_px, num_samples).astype(int)
     
@@ -96,14 +105,13 @@ def calculate_putt_solution(x_ball, y_ball, x_hole, y_hole, max_depth_yds, green
         aim_side = detected_side
 
     # --- ELEVATION & "PLAY AS" DISTANCE CALCULATION ---
-    # Corrected sign: Downhill putts reduce play-as distance, uphill putts increase it
     elevation_delta_ft = (y_hole - y_ball) * 0.15  
     play_as_dist_ft = straight_dist_ft + elevation_delta_ft 
     play_as_dist_ft = max(1.0, play_as_dist_ft)
 
     stroke_feel_ft = round(play_as_dist_ft * (calibrated_stimp / 8.0), 1)
 
-    # Aim offset calculation driven by gradient intensity and distance
+    # Aim offset calculation
     base_drop = abs(y_ball - y_hole) * 0.04
     aim_offset_ft = base_drop * avg_gradient_factor * (calibrated_stimp / 8.0) * (straight_dist_ft / 12.0)
     aim_ft_val = round(aim_offset_ft, 2)
@@ -135,12 +143,12 @@ def calculate_putt_solution(x_ball, y_ball, x_hole, y_hole, max_depth_yds, green
     draw.line([(bx_px, by_px), (tx_px, ty_px)], fill="#2b5c8f", width=4)
 
     # 3. Markers: Ball (Blue), Hole (Red), Target/Aim (Cyan)
-    dot_r = 10
+    dot_r = 12
     draw.ellipse([bx_px - dot_r, by_px - dot_r, bx_px + dot_r, by_px + dot_r], fill="blue", outline="white", width=2)
     draw.ellipse([hx_px - dot_r, hy_px - dot_r, hx_px + dot_r, hy_px + dot_r], fill="red", outline="white", width=2)
-    draw.ellipse([tx_px - 7, ty_px - 7, tx_px + 7, ty_px + 7], fill="cyan", outline="black", width=2)
+    draw.ellipse([tx_px - 8, ty_px - 8, tx_px + 8, ty_px + 8], fill="cyan", outline="black", width=2)
     
-    # 4. Aim Text Label next to Aim Dot
+    # 4. Aim Text Label
     aim_label_text = f"Aim: {format_feet_inches(aim_ft_val)} {aim_side}"
     try:
         font = ImageFont.load_default()
@@ -182,13 +190,14 @@ for filename in [f"{selected_hole}_Heat.png", f"{selected_hole}_heat.png"]:
         heat_path = path
         break
 
-DISPLAY_WIDTH = 550
+# Compact mobile-friendly display sizing
+MOBILE_DISPLAY_WIDTH = 380
 
 # --- 4. MAIN INTERFACE ---
-st.title(f"⛳ Hole #{selected_hole} ({selected_course})")
+st.title(f"⛳ Hole #{selected_hole}")
 
 if heat_path:
-    raw_img = Image.open(heat_path).convert("RGB")
+    raw_img = load_heat_map(heat_path)
     
     annotated_img, straight_dist, play_as_dist, aim_val, aim_dir, stroke_dist, pixels_to_ft_func = calculate_putt_solution(
         x_ball=st.session_state.ball_coords["x_ft"],
@@ -200,40 +209,37 @@ if heat_path:
         calibrated_stimp=base_stimp,
         break_mode=break_mode,
         raw_img=raw_img,
-        display_width=DISPLAY_WIDTH
+        display_width=MOBILE_DISPLAY_WIDTH
     )
 
     # --- TOP METRICS READOUT ---
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
     with c1:
         aim_str = f"{format_feet_inches(aim_val)} {aim_dir}" if aim_val > 0.05 else "Straight"
         st.metric(label="🎯 Aim Offset", value=aim_str)
     with c2:
-        st.metric(label="⚡ Stroke Feel Distance", value=f"{stroke_dist} ft", delta=f"Play As: {round(play_as_dist, 1)} ft (Actual: {round(straight_dist, 1)} ft)")
-    with c3:
-        break_desc = "Right-to-Left Break" if aim_dir == "Right" else "Left-to-Right Break"
-        st.metric(label="📈 Expected Break", value=break_desc, delta=f"Gradient-weighted aim")
+        st.metric(label="⚡ Stroke Feel", value=f"{stroke_dist} ft", delta=f"Play As: {round(play_as_dist, 1)}ft")
 
     st.markdown("---")
 
-    # --- SINGLE MAP & CONTROLS LAYOUT ---
-    col_map, col_info = st.columns([1.5, 1])
+    # --- MAP & TOUCH INTERACTION ---
+    st.subheader("🔥 Heat Map Readout")
+    st.caption(" Tap directly on the map below to set your position:")
     
-    with col_map:
-        st.subheader("🔥 Heat Map Readout")
-        clicked = streamlit_image_coordinates(annotated_img, key="single_map_click", width=DISPLAY_WIDTH)
-        if clicked is not None:
-            cx, cy = pixels_to_ft_func(clicked["x"], clicked["y"])
-            if "Hole" in placement_mode:
-                st.session_state.hole_coords = {"x_ft": cx, "y_ft": cy}
-            else:
-                st.session_state.ball_coords = {"x_ft": cx, "y_ft": cy}
-            st.rerun()
+    clicked = streamlit_image_coordinates(annotated_img, key="mobile_map_click", width=MOBILE_DISPLAY_WIDTH)
+    if clicked is not None:
+        cx, cy = pixels_to_ft_func(clicked["x"], clicked["y"])
+        if "Hole" in placement_mode:
+            st.session_state.hole_coords = {"x_ft": cx, "y_ft": cy}
+        else:
+            st.session_state.ball_coords = {"x_ft": cx, "y_ft": cy}
+        st.rerun()
 
-    with col_info:
-        st.subheader("Coordinates")
-        st.info(f"**Ball:** X: {st.session_state.ball_coords['x_ft']:.1f}ft, Y: {st.session_state.ball_coords['y_ft']:.1f}ft")
-        st.info(f"**Hole:** X: {st.session_state.hole_coords['x_ft']:.1f}ft, Y: {st.session_state.hole_coords['y_ft']:.1f}ft")
-        st.markdown("**Instructions:** Select whether your next click sets the Ball or Hole in the sidebar, then click directly on the heat map to update your position and instantly see your updated read.")
+    with st.expander("📍 View Coordinates & Details"):
+        st.write(f"**Ball:** X: {st.session_state.ball_coords['x_ft']:.1f}ft, Y: {st.session_state.ball_coords['y_ft']:.1f}ft")
+        st.write(f"**Hole:** X: {st.session_state.hole_coords['x_ft']:.1f}ft, Y: {st.session_state.hole_coords['y_ft']:.1f}ft")
+        st.write(f"**Actual Distance:** {round(straight_dist, 1)} ft")
+        break_desc = "Right-to-Left Break" if aim_dir == "Right" else "Left-to-Right Break"
+        st.write(f"**Break Direction:** {break_desc}")
 else:
-    st.warning(f"Heat map image not found for Hole #{selected_hole} in `assets/{course_folder}/`. Please check your file naming.")
+    st.warning(f"Heat map image not found for Hole #{selected_hole} in `assets/{course_folder}/`.")
