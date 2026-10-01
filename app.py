@@ -76,11 +76,10 @@ def get_slope(path, width_ft, depth_ft, red_is_high, relief_ft):
     # Smooth out sharp boundary lines on the outer edge to prevent false cliffs
     margin = 10
     if arr.shape[0] > 2 * margin and arr.shape[1] > 2 * margin:
-        for c in range(3):
-            arr[:margin, :, c] = arr[margin, :, c]
-            arr[-margin:, :, c] = arr[-margin:, :, c]
-            arr[:, :margin, c] = arr[:, margin, c]
-            arr[:, -margin:, c] = arr[:, -margin:, c]
+        arr[:margin, :, :] = arr[margin, :, :]
+        arr[-margin:, :, :] = arr[-margin-1, :, :]
+        arr[:, :margin, :] = arr[:, margin, :]
+        arr[:, -margin:, :] = arr[:, -margin-1, :]
 
     geom = pe.make_geom(img.width, img.height, width_ft, depth_ft)
     sx, sy, meta = pe.build_slope_field(arr, geom, red_is_high, relief_ft)
@@ -251,7 +250,7 @@ with tab_traj:
                    "Try lowering Green relief or checking the color direction.")
 
 with tab_map:
-    st.caption("Tap the map to place the marker chosen in the sidebar. Edge clamping active to smooth out border artifacts.")
+    st.caption("Tap the map to place the marker chosen in the sidebar.")
     shown = draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows)
     clicked = streamlit_image_coordinates(shown, key="map_click", width=DISPLAY_WIDTH)
     if clicked and clicked != st.session_state.get("last_click"):
