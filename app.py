@@ -3,6 +3,7 @@ import numpy as np
 import os
 from PIL import Image, ImageDraw
 from streamlit_image_coordinates import streamlit_image_coordinates
+import matplotlib.pyplot as plt
 
 # --- 1. CONFIG & SESSION STATE ---
 st.set_page_config(page_title="CaddyBrain Green Reader", page_icon="⛳", layout="wide")
@@ -99,7 +100,8 @@ def calculate_putt_solution(x_ball, y_ball, x_hole, y_hole, max_depth_yds, green
     draw_img = raw_img.copy()
     draw = ImageDraw.Draw(draw_img)
     
-    target_x_ft = x_hole + aim_offset_ft
+    # If slope_drop is negative, aim is Left (- offset). If positive, aim is Right (+ offset)
+    target_x_ft = x_hole - aim_offset_ft if aim_side == "Left" else x_hole + aim_offset_ft
     target_y_ft = y_hole
     tx_px, ty_px = ft_to_pixels(target_x_ft, target_y_ft)
 
@@ -169,7 +171,7 @@ green_width_yds = saved_width
 if base_img_path:
     try:
         raw_img = Image.open(base_img_path).convert("RGB")
-        cont_img = Image.open(contour_path).convert("RGB" ) if contour_path and os.path.exists(contour_path) else None
+        cont_img = Image.open(contour_path).convert("RGB") if contour_path and os.path.exists(contour_path) else None
         
         annotated_img, straight_dist_ft, aim_ft_val, aim_side, speed_paces, pixels_to_ft_func, slope_drop = calculate_putt_solution(
             x_ball=st.session_state.ball_coords["x_ft"],
@@ -185,7 +187,6 @@ if base_img_path:
         )
         interactive_display_img = annotated_img
         if cont_img:
-            # Generate contour overlay too
             cont_annotated, _, _, _, _, _, _ = calculate_putt_solution(
                 x_ball=st.session_state.ball_coords["x_ft"],
                 y_ball=st.session_state.ball_coords["y_ft"],
@@ -208,7 +209,6 @@ st.title(f"⛳ Hole #{selected_hole} ({selected_course})")
 tab_dashboard, tab_maps = st.tabs(["📊 Trajectory & Metrics Dashboard", "🗺️ Dual-Map Green Inspector"])
 
 with tab_dashboard:
-    # Top Stat Cards
     c1, c2, c3 = st.columns(3)
     with c1:
         aim_str = f"{format_feet_inches(aim_ft_val)} {aim_side}" if aim_ft_val > 0 else "Straight (0 in)"
@@ -224,35 +224,28 @@ with tab_dashboard:
     st.markdown("---")
     st.subheader("Top-Down Trajectory Visualizer *(Aim Line vs True Curve)*")
     
-    # Custom standalone matplotlib/streamlit grid chart mirroring your reference graphic
-    import matplotlib.pyplot as plt
     fig, ax = plt.subplots(figsize=(8, 5))
-    
-    # Draw grid lines
     ax.set_xticks(np.arange(0, 15, 1))
     ax.set_yticks(np.arange(0, 50, 5))
     ax.grid(True, linestyle="--", alpha=0.5, color="#dcdcdc")
     
-    # Plot start and target points
     bx, by = st.session_state.ball_coords["x_ft"], st.session_state.ball_coords["y_ft"]
     hx, hy = st.session_state.hole_coords["x_ft"], st.session_state.hole_coords["y_ft"]
+    
+    # Correctly position aim coordinate on graph matching Left vs Right direction
     aim_x = hx - aim_ft_val if aim_side == "Left" else hx + aim_ft_val
     
-    # Straight Aim Line
     ax.plot([bx, aim_x], [by, hy], color="#2b5c8f", linewidth=2, label="Aim Line")
     ax.scatter([aim_x], [hy], color="#2b5c8f", s=50, zorder=5)
     ax.text(aim_x - 1.5, hy + 1, f"Aim ({format_feet_inches(aim_ft_val)})", color="#2b5c8f", fontweight="bold")
     
-    # True Curve Path
     t_vals = np.linspace(0, 1, 50)
-    curve_x = (1 - t_vals)**2 * bx + 2 * (1 - t_vals) * t_vals * ((bx + hx)/2 - slope_drop*2) + t_vals**2 * hx
+    curve_direction_factor = -1.0 if aim_side == "Left" else 1.0
+    curve_x = (1 - t_vals)**2 * bx + 2 * (1 - t_vals) * t_vals * ((bx + hx)/2 + curve_direction_factor * abs(slope_drop)*2) + t_vals**2 * hx
     curve_y = (1 - t_vals)**2 * by + 2 * (1 - t_vals) * t_vals * (by + hy)/2 + t_vals**2 * hy
     ax.plot(curve_x, curve_y, color="#2e7d32", linewidth=3, label="True Curve")
     
-    # Reference Line (Center Pin)
     ax.plot([hx, hx], [by, hy], color="gray", linestyle=":", linewidth=1.5)
-    
-    # Markers
     ax.scatter([bx], [by], color="black", s=70, zorder=6)
     ax.scatter([hx], [hy], color="black", s=70, zorder=6)
     
@@ -265,7 +258,7 @@ with tab_dashboard:
     st.caption(f"Calculated for a {round(straight_dist_ft, 1)} ft putt with Stimp {calibrated_stimp:.1f}.")
 
 with tab_maps:
-    col_ctrl, col_heat, col_cont = columns_map = st.columns([1, 1.2, 1.2])
+    col_ctrl, col_heat, col_cont = st.columns([1, 1.5, 1.5])
     
     with col_ctrl:
         st.subheader("Marker Controls")
@@ -284,7 +277,8 @@ with tab_maps:
     with col_heat:
         st.subheader("🔥 Heat Map Overlay")
         if interactive_display_img and pixels_to_ft_func:
-            clicked_heat = streamlit_image_coordinates(interactive_display_img, key="heat_map_click")
+            # Constrain map display width using container width scaling
+            clicked_heat = streamlit_image_coordinates(interactive_display_img, key="heat_map_click", width=400)
             if clicked_heat is not None:
                 cx, cy = pixels_to_ft_func(clicked_heat["x"], clicked_heat["y"])
                 if "Hole" in placement_mode:
@@ -298,7 +292,8 @@ with tab_maps:
     with col_cont:
         st.subheader("🗺️ Contour Map Overlay")
         if contour_display_img and pixels_to_ft_func:
-            clicked_cont = streamlit_image_coordinates(contour_display_img, key="contour_map_click")
+            # Constrain map display width so it doesn't blow past the column boundary
+            clicked_cont = streamlit_image_coordinates(contour_display_img, key="contour_map_click", width=400)
             if clicked_cont is not None:
                 cx, cy = pixels_to_ft_func(clicked_cont["x"], clicked_cont["y"])
                 if "Hole" in placement_mode:
