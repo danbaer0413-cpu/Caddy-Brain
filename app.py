@@ -17,7 +17,31 @@ COURSES = {"Mercer Oaks East": list(range(1, 19))}   # green size and scale are 
 DISPLAY_WIDTH = 640
 
 
-# --- 2. HELPERS ---
+# --- 2. ONBOARDING TUTORIAL MODAL ---
+@st.dialog("⛳ Welcome to CaddyBrain Green Reader")
+def show_tutorial():
+    st.markdown("""
+    Welcome! Here is a quick guide to reading putts like a pro:
+
+    1. **Select Course & Hole**  
+       Choose your course and hole number at the top of the page.
+    2. **Tap to Place Markers**  
+       Select whether your next tap sets the **🔴 Hole** or **🔵 Ball**, then tap directly on the heat map.
+    3. **Adjust Stimp & Fine-Tune**  
+       Set your green speed (**Stimp**) and tweak advanced settings if needed in the expander below the map.
+    4. **Read Aim & Trajectory**  
+       View your precise **Aim Point**, **Putt Length**, **Hit Power**, and the simulated ball roll curve!
+    """)
+    if st.button("Let's Read Some Putts! 🏌️‍♂️", use_container_width=True):
+        st.session_state.onboarded = True
+        st.rerun()
+
+if "onboarded" not in st.session_state:
+    st.session_state.onboarded = False
+    show_tutorial()
+
+
+# --- 3. HELPERS ---
 def format_feet_inches(total_feet):
     ft_total = abs(total_feet)
     ft = int(ft_total)
@@ -157,8 +181,12 @@ def trajectory_chart(sol):
     return fig
 
 
-# --- 3. PAGE LAYOUT: one page, top to bottom ---
-st.title("⛳ CaddyBrain Green Reader")
+# --- 4. PAGE LAYOUT: one page, top to bottom ---
+c_title, c_btn = st.columns([4, 1])
+c_title.title("⛳ CaddyBrain Green Reader")
+if c_btn.button("📖 Tutorial", use_container_width=True):
+    show_tutorial()
+
 top = st.container()                                   # course, hole, stimp, marker mode
 map_box = st.container()                               # heat map
 tune_box = st.expander("⚙️ Fine-tune the read")        # advanced controls, right under the map
