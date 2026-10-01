@@ -78,7 +78,6 @@ def calculate_putt_solution(x_ball, y_ball, x_hole, y_hole, max_depth_yds, green
             r, g, b = img_np[sy, sx][:3]
             red_score += int(r)
             blue_score += int(b)
-            # Color saturation / distance from neutral gray represents slope steepness (gradient)
             neutral = (int(r) + int(g) + int(b)) / 3.0
             saturation = abs(int(r) - neutral) + abs(int(b) - neutral)
             gradient_intensity_sum += saturation
@@ -87,12 +86,8 @@ def calculate_putt_solution(x_ball, y_ball, x_hole, y_hole, max_depth_yds, green
 
     # Determine Break Side
     natural_side = "Right" if red_score > blue_score else "Left"
-    if x_ball > x_hole:
-        geo_side = "Right"
-    else:
-        geo_side = "Left"
+    geo_side = "Right" if x_ball > x_hole else "Left"
         
-    # Combine image gradient sampling with geometry
     detected_side = natural_side if abs(red_score - blue_score) > 1000 else geo_side
     
     if break_mode == "Inverted (Flip L/R)":
@@ -101,12 +96,11 @@ def calculate_putt_solution(x_ball, y_ball, x_hole, y_hole, max_depth_yds, green
         aim_side = detected_side
 
     # --- ELEVATION & "PLAY AS" DISTANCE CALCULATION ---
-    # Vertical coordinate delta representing uphill/downhill component
+    # Corrected sign: Downhill putts reduce play-as distance, uphill putts increase it
     elevation_delta_ft = (y_hole - y_ball) * 0.15  
-    play_as_dist_ft = straight_dist_ft - elevation_delta_ft # Downhill reduces distance, uphill increases
+    play_as_dist_ft = straight_dist_ft + elevation_delta_ft 
     play_as_dist_ft = max(1.0, play_as_dist_ft)
 
-    # Stroke feel scaled by Stimp and gradient
     stroke_feel_ft = round(play_as_dist_ft * (calibrated_stimp / 8.0), 1)
 
     # Aim offset calculation driven by gradient intensity and distance
