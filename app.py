@@ -16,10 +16,11 @@ if "courses_db" not in st.session_state:
         }
     }
 
-if "ball_coords" not in st.session_state or not isinstance(st.session_state.ball_coords, dict) or "x_ft" not in st.session_state.ball_coords:
+# Bulletproof initialization / structural repair for coordinates
+if "ball_coords" not in st.session_state or not isinstance(st.session_state.ball_coords, dict) or "x_ft" not in st.session_state.ball_coords or "y_ft" not in st.session_state.ball_coords:
     st.session_state.ball_coords = {"x_ft": 7.0, "y_ft": 4.0}
 
-if "hole_coords" not in st.session_state or not isinstance(st.session_state.hole_coords, dict) or "x_ft" not in st.session_state.hole_coords:
+if "hole_coords" not in st.session_state or not isinstance(st.session_state.hole_coords, dict) or "x_ft" not in st.session_state.hole_coords or "y_ft" not in st.session_state.hole_coords:
     st.session_state.hole_coords = {"x_ft": 7.0, "y_ft": 30.0}
 
 # --- 2. FORMATTER & ENGINE ---
@@ -194,7 +195,6 @@ if base_img_path:
         interactive_display_img = annotated_img
         
         if cont_img:
-            # Generate clean contour reference view matching calculation markings
             cont_annotated, _, _, _, _, _, _ = calculate_putt_solution(
                 x_ball=st.session_state.ball_coords["x_ft"],
                 y_ball=st.session_state.ball_coords["y_ft"],
