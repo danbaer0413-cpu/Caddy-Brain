@@ -8,26 +8,45 @@ import matplotlib.pyplot as plt
 from PIL import Image, ImageDraw
 from streamlit_image_coordinates import streamlit_image_coordinates
 
-import putt_engine as pe
-import gps_mode as gm
+try:
+    import putt_engine as pe
+    import gps_mode as gm
+except ImportError as _e:                              # a code file wasn't uploaded next to app.py
+    st.set_page_config(page_title="CaddyBrain Green Reader", page_icon="⛳", layout="centered")
+    st.error(f"A code file is missing from your repository ({_e}). Upload putt_engine.py and gps_mode.py into the "
+             "same folder as app.py, then reboot the app.")
+    st.stop()
 
 # --- 1. CONFIG & SESSION STATE ---
 st.set_page_config(page_title="CaddyBrain Green Reader", page_icon="⛳", layout="centered")
 
+# the three code files must be the same release; a stale copy of putt_engine.py or gps_mode.py gives confusing errors
+import inspect
+_needs = []
+if not hasattr(pe, "auto_geom") or "depth_yd" not in inspect.signature(pe.auto_geom).parameters:
+    _needs.append("putt_engine.py")
+if not hasattr(gm, "calibrate"):
+    _needs.append("gps_mode.py")
+if _needs:
+    st.error("This app.py needs the latest " + " and ".join(_needs) + ". The copy in your repository is older. "
+             "Upload the latest version of each file into the same folder as app.py, then reboot the app.")
+    st.stop()
+
 def discover_courses(root="assets"):
-    """Every folder in assets/ is a course; every file named <hole>_Heat.png (or .jpg/.jpeg/.webp) is a hole.
-    Adding a course is just adding a folder of images. Returns {display name: {hole number: image path}}."""
+    """Every folder under assets/ that holds files named <hole>_Heat.png (or .jpg/.jpeg/.webp, any capitalization) is a
+    course, named after the folder. Folders nested inside other folders are found too, so an extra level from
+    unzipping or uploading doesn't hide a course. Returns {display name: {hole number: image path}}."""
     found = {}
-    if os.path.isdir(root):
-        for folder in sorted(os.listdir(root)):
-            holes = {}
-            d = os.path.join(root, folder)
-            for fn in (os.listdir(d) if os.path.isdir(d) else []):
-                m = re.match(r"^(\d+)_heat\.(png|jpe?g|webp)$", fn, re.I)
-                if m:
-                    holes[int(m.group(1))] = os.path.join(d, fn)
-            if holes:
-                found[folder.replace("_", " ").title()] = holes
+    for dirpath, _dirs, files in sorted(os.walk(root)):
+        holes = {}
+        for fn in files:
+            m = re.match(r"^(\d+)_heat\.(png|jpe?g|webp)$", fn, re.I)
+            if m:
+                holes[int(m.group(1))] = os.path.join(dirpath, fn)
+        if holes:
+            name = os.path.basename(dirpath).replace("_", " ").title()
+            for hole, path in holes.items():
+                found.setdefault(name, {}).setdefault(hole, path)    # same name twice: keep the shallower copy
     return found
 
 
@@ -37,14 +56,17 @@ COURSES = discover_courses()
 def load_scales(course_name, hole):
     """Depth/width in yards for maps without yard labels, from an optional scales.json in the course's folder:
     {"1": {"depth_yd": 29, "width_yd": 19}, "2": {"depth_yd": 29, "width_yd": 24}}"""
-    try:
-        import json
-        folder = os.path.dirname(next(iter(COURSES[course_name].values())))
-        with open(os.path.join(folder, "scales.json")) as f:
-            e = json.load(f).get(str(hole), {})
-        return float(e.get("depth_yd", 0) or 0), float(e.get("width_yd", 0) or 0)
-    except Exception:
-        return 0.0, 0.0
+    import json
+    folders = sorted({os.path.dirname(p) for p in COURSES.get(course_name, {}).values()}, key=len)
+    for folder in folders:
+        try:
+            with open(os.path.join(folder, "scales.json")) as f:
+                e = json.load(f).get(str(hole))
+            if e:
+                return float(e.get("depth_yd", 0) or 0), float(e.get("width_yd", 0) or 0)
+        except Exception:
+            continue
+    return 0.0, 0.0
 
 DISPLAY_WIDTH = 640
 
@@ -477,7 +499,12 @@ if not heat_path:
 
 img = load_heat_map(heat_path)
 depth_yd = width_yd = 0.0
-geom = get_geom(heat_path)
+try:
+    geom = get_geom(heat_path)
+except Exception as e:
+    st.error(f"Couldn't analyze `{heat_path}`: {type(e).__name__}: {e}. If the other holes work, this image may be "
+             "unusual. Send it along with this message and it can be fixed.")
+    st.stop()
 if geom["source"] == "estimate":                       # no yard labels on this map: use scales.json, else ask for D and W
     depth_yd, width_yd = load_scales(course, hole_no)
     if depth_yd > 0:
@@ -582,6 +609,7 @@ with chart_box:
         plt.close(fig)
 
 with details_box:
+    st.write("**Courses found in assets/:** " + ("; ".join(f"{c} ({len(h)} holes)" for c, h in COURSES.items()) or "none"))
     how = {"yard labels": "read from the map's yard labels", "entered": "from the depth and width you entered",
            "estimate": "estimated (no yard labels)"}.get(geom["source"], "")
     st.write(f"**Green:** {geom['width_ft'] / 3:.0f} yd wide x {geom['depth_ft'] / 3:.0f} yd deep, scale {how}. "

@@ -108,14 +108,20 @@ def auto_geom(img_np, depth_yd=None, width_yd=None):
     if len(xs) == 0 or inside.all():
         return None
     gx0, gx1, gy0, gy1 = xs.min(), xs.max(), ys.min(), ys.max()
-    labels = _label_rows(img_np)
+    try:
+        labels = _label_rows(img_np)
+    except Exception:
+        labels = []
     source = "yard labels"
     labels_read = False
     ppx = ppy = None
     if len(labels) >= 5:
         top, y0, ym5 = labels[0], labels[-2], labels[-1]
         ppy0 = (ym5 - y0) / 5.0                                  # px per yard from the -5 label (rough: smaller font)
-        vals = _read_label_values(img_np, labels[:-1])           # the top..0 labels, read as numbers
+        try:
+            vals = _read_label_values(img_np, labels[:-1])       # the top..0 labels, read as numbers
+        except Exception:
+            vals = None
         n_yd = None
         if vals:
             m = len(vals)
