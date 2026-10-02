@@ -64,9 +64,13 @@ def auto_geom(img_np):
         source = "estimate"
         ppy_yd, y0 = (gy1 - gy0) / 28.0, float(gy1)              # assume a 28 yard deep green
     ppf = ppy_yd / 3.0
+    front_x = xs[ys >= gy1 - 2].mean()                          # front-most and back-most points of the green
+    back_x = xs[ys <= gy0 + 2].mean()
     return dict(x0=float(gx0), y0=float(y0), ppx=ppf, ppy=ppf, xmin_ft=0.0, xmax_ft=(gx1 - gx0) / ppf,
                 ymin_ft=(y0 - gy1) / ppf, ymax_ft=(y0 - gy0) / ppf, width_ft=(gx1 - gx0) / ppf,
-                depth_ft=(gy1 - gy0) / ppf, source=source, px_per_yd=float(ppy_yd))
+                depth_ft=(gy1 - gy0) / ppf, source=source, px_per_yd=float(ppy_yd),
+                front_ft=((front_x - gx0) / ppf, (y0 - gy1) / ppf),
+                back_ft=((back_x - gx0) / ppf, (y0 - gy0) / ppf))
 
 
 def default_markers(g):

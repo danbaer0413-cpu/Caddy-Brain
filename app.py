@@ -8,6 +8,7 @@ from PIL import Image, ImageDraw
 from streamlit_image_coordinates import streamlit_image_coordinates
 
 import putt_engine as pe
+import gps_mode as gm
 
 # --- 1. CONFIG & SESSION STATE ---
 st.set_page_config(page_title="CaddyBrain Green Reader", page_icon="⛳", layout="centered")
@@ -17,31 +18,7 @@ COURSES = {"Mercer Oaks East": list(range(1, 19))}   # green size and scale are 
 DISPLAY_WIDTH = 640
 
 
-# --- 2. ONBOARDING TUTORIAL MODAL ---
-@st.dialog("⛳ Welcome to CaddyBrain Green Reader")
-def show_tutorial():
-    st.markdown("""
-    Welcome! Here is a quick guide to reading putts like a pro:
-
-    1. **Select Course & Hole**  
-       Choose your course and hole number at the top of the page.
-    2. **Tap to Place Markers**  
-       Select whether your next tap sets the **🔴 Hole** or **🔵 Ball**, then tap directly on the heat map.
-    3. **Adjust Stimp & Fine-Tune**  
-       Set your green speed (**Stimp**) and tweak advanced settings if needed in the expander below the map.
-    4. **Read Aim & Trajectory**  
-       View your precise **Aim Point**, **Putt Length**, **Hit Power**, and the simulated ball roll curve!
-    """)
-    if st.button("Let's Read Some Putts! 🏌️‍♂️", use_container_width=True):
-        st.session_state.onboarded = True
-        st.rerun()
-
-if "onboarded" not in st.session_state:
-    st.session_state.onboarded = False
-    show_tutorial()
-
-
-# --- 3. HELPERS ---
+# --- 2. HELPERS ---
 def format_feet_inches(total_feet):
     ft_total = abs(total_feet)
     ft = int(ft_total)
@@ -99,7 +76,8 @@ def classic_read(img, geom, ball, hole, stimp):
     return off, side
 
 
-def draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows, show_ignored=False, show_detected=False):
+def draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows, show_ignored=False, show_detected=False,
+                      extra_marks=None):
     out = img.copy()
     if show_ignored and meta["ignored"].any():     # tint what the slope reader is skipping
         m = np.kron(meta["ignored"], np.ones((meta["step"], meta["step"]), bool))
@@ -144,6 +122,10 @@ def draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows, sho
         marks.append((a, "cyan", 8))
     for pt, col, r in marks:
         d.ellipse([pt[0] - r, pt[1] - r, pt[0] + r, pt[1] + r], fill=col, outline="white", width=2)
+    for label, (mx, my), col in (extra_marks or []):     # GPS beta: reference spots A/B and your position
+        px_, py_ = pe.ft_to_px(geom, mx, my)
+        d.polygon([(px_, py_ - 10), (px_ + 10, py_), (px_, py_ + 10), (px_ - 10, py_)], fill=col, outline="white")
+        d.text((px_ + 13, py_ - 6), label, fill=col)
     return out
 
 
@@ -181,28 +163,249 @@ def trajectory_chart(sol):
     return fig
 
 
-# --- 4. PAGE LAYOUT: one page, top to bottom ---
-c_title, c_btn = st.columns([4, 1])
-c_title.title("⛳ CaddyBrain Green Reader")
-if c_btn.button("📖 Tutorial", use_container_width=True):
-    show_tutorial()
+# --- 3. TUTORIAL TAB ---
+def find_heat_path(course_name, hole):
+    folder_ = course_name.lower().replace(" ", "_")
+    return next((f"assets/{folder_}/{n}" for n in (f"{hole}_Heat.png", f"{hole}_heat.png")
+                 if os.path.exists(f"assets/{folder_}/{n}")), None)
 
-top = st.container()                                   # course, hole, stimp, marker mode
-map_box = st.container()                               # heat map
-tune_box = st.expander("⚙️ Fine-tune the read")        # advanced controls, right under the map
-out_box = st.container()                               # aim point, putt length, how hard to hit it
-chart_box = st.container()                             # trajectory chart
-details_box = st.expander("📍 Details & comparison")
+
+@st.cache_data
+def tutorial_example():
+    """A sample read on the first hole that has a heat map, so the tutorial can show the real thing."""
+    try:
+        for course_name, holes in COURSES.items():
+            for hole in holes:
+                p = find_heat_path(course_name, hole)
+                if p:
+                    img_, g_ = load_heat_map(p), get_geom(p)
+                    b_, h_ = pe.default_markers(g_)
+                    args = (None, 1.0, True, True, 0.7, 0.3)
+                    sx_, sy_, m_ = get_slope(p, *args)
+                    sol_ = get_solution(p, args, b_, h_, 10.0, 1.5)
+                    return draw_heat_overlay(img_, g_, b_, h_, sol_, sx_, sy_, m_, False), hole
+    except Exception:
+        pass
+    return None
+
+
+def render_tutorial():
+    st.header("Welcome to Green Reader")
+    st.write("Green Reader tells you **where to aim** and **how hard to hit** a putt. It reads each hole's heat map: "
+             "**red is high ground, blue is low ground**, and the small arrows point **downhill** "
+             "(double-head arrows mean a steeper slope). When you're ready, switch to the **⛳ Green Reader** tab.")
+
+    st.subheader("Reading the map")
+    ex = tutorial_example()
+    if ex:
+        st.image(ex[0], width=420, caption=f"Example read on hole {ex[1]}")
+    st.markdown(
+        "- 🔵 **Blue dot:** the ball\n"
+        "- 🔴 **Red dot:** the hole\n"
+        "- **Cyan dot:** your aim point. Aim here, not at the hole.\n"
+        "- **Green line:** the aim line from the ball to the cyan dot\n"
+        "- **Blue curve:** where the ball is expected to roll\n"
+        "- **Gray line:** the straight line from ball to hole\n"
+        "- **Black arrows** (optional overlay): the downhill direction the app computed")
+
+    st.subheader("Where everything is on the Green Reader tab")
+    st.markdown(
+        "**① Set up the putt:** pick the course and hole, set the **Stimp** (green speed), and choose whether your "
+        "next tap places the 🔴 hole or the 🔵 ball.\n\n"
+        "**② Heat map:** tap it to place the ball or hole. Tap again to move it. "
+        "**Reset markers** puts both back on the green.\n\n"
+        "**③ Fine-tune the read:** optional settings under the map. You can leave these alone.\n\n"
+        "**④ Your numbers:** aim point, putt length, and how hard to hit it.\n\n"
+        "**⑤ Trajectory chart:** the aim line next to the curved roll, with the hole at the top and the ball at the bottom.")
+
+    st.subheader("Quick start")
+    st.markdown("1. Choose the hole and set the Stimp.\n"
+                "2. Tap the map to place the 🔵 ball where it is.\n"
+                "3. Switch to 🔴 Hole and tap the cup location.\n"
+                "4. Read the numbers and the chart, aim at the cyan dot, and hit the putt.")
+
+    st.subheader("What the numbers mean")
+    st.markdown(
+        "- 🎯 **Aim point:** how far left or right of the hole to aim, and about how many cup widths that is.\n"
+        "- 📏 **Putt length:** the real distance from ball to hole.\n"
+        "- ⚡ **Hit it like a:** the stroke to use, shown as the length of a putt on a flat green at your reference speed. "
+        "Uphill putts need a longer stroke than the putt length, downhill putts a shorter one.")
+
+    st.subheader("About Stimp (green speed)")
+    st.markdown(
+        "**Lower numbers are slower greens and higher numbers are faster greens.** On a faster green the ball rolls "
+        "farther for the same stroke, so you hit **softer**, and it also **breaks more**. On a slower green you hit "
+        "**harder** and it breaks less. The *Hit it like* number is measured against a reference speed "
+        "(Stimp 10 unless you change it under ③ Fine-tune).")
+
+    st.subheader("GPS mode (beta)")
+    st.markdown(
+        "Off by default. Flip **📍 GPS mode (beta)** on under ① to place the ball and hole from your phone's location.\n\n"
+        "1. Stand at a spot you can find on the map, like the front of the green, press the location button, mark that spot "
+        "with **📍 Ref A** (tap the map, or use the quick button), and press **Lock Ref A**.\n"
+        "2. Walk to a second spot far from the first, like the back of the green, and do the same with **Ref B**.\n"
+        "3. Stand over the ball, press the location button, then **Set ball here**. Repeat at the hole.\n\n"
+        "Phone GPS is only good to a few yards, so treat the placement as a starting point: tap the map to fine-tune, "
+        "or type the paced putt length. Switch GPS mode off if anything acts up.")
+
+    with st.expander("Other settings and questions"):
+        st.markdown(
+            "- **Green relief:** how much the ground rises between the blue and red areas. Raise it if reads look too "
+            "straight, lower it if they look too curvy.\n"
+            "- **Arrow trust and double-arrow boost:** how much the app follows the printed arrows versus the colors.\n"
+            "- **Heat map colors:** *Auto* works out whether red is high ground from the arrows. You rarely need to change it.\n"
+            "- **Scale:** the green's size is read from the yard labels on each map. You never enter widths or depths.\n"
+            "- **Details & comparison** (bottom of the page) shows the green size, coordinates, and how many arrows were found.")
+
+
+# --- GPS MODE (beta) ---
+def render_gps_panel(geom):
+    """Calibrate with two reference spots, then set ball/hole from the phone's GPS. Everything here is optional."""
+    ss = st.session_state
+    ss.setdefault("ref_tap", {})
+    ss.setdefault("gps_refs", {})
+    st.markdown("##### 📍 GPS mode (beta)")
+    st.caption("Phone GPS is only good to a few yards, so use it to place the ball and hole roughly, then tap the map to "
+               "fine-tune or type the paced putt length. Turn the GPS switch off to go back to normal.")
+
+    # current location: the phone button (needs the streamlit-geolocation add-on) or typed test coordinates
+    raw = None
+    try:
+        from streamlit_geolocation import streamlit_geolocation
+        raw = streamlit_geolocation()
+    except ImportError:
+        st.info("The phone-location add-on isn't installed. Add `streamlit-geolocation` to requirements.txt, "
+                "or test with typed coordinates below.")
+    except Exception as e:
+        st.warning(f"Couldn't read the phone's location ({e}). You can still test with typed coordinates below.")
+    if isinstance(raw, dict):
+        coords = raw["coords"] if isinstance(raw.get("coords"), dict) else raw
+        lat, lon, acc = coords.get("latitude"), coords.get("longitude"), coords.get("accuracy")
+        if lat is not None and lon is not None and raw != ss.get("gps_last_raw"):
+            ss.gps_last_raw = raw
+            ss.gps_fix_n = ss.get("gps_fix_n", 0) + 1
+            ss.gps_fix = {"lat": float(lat), "lon": float(lon), "acc": acc, "src": "phone", "id": ss.gps_fix_n}
+    with st.expander("Test without a phone: type coordinates"):
+        la = st.number_input("Latitude", value=0.0, format="%.7f", key="typed_lat")
+        lo = st.number_input("Longitude", value=0.0, format="%.7f", key="typed_lon")
+        if st.button("Use these as my location"):
+            ss.gps_fix_n = ss.get("gps_fix_n", 0) + 1
+            ss.gps_fix = {"lat": la, "lon": lo, "acc": None, "src": "typed", "id": ss.gps_fix_n}
+    fix = ss.get("gps_fix")
+    if fix:
+        acc_txt = f", accurate to about ±{fix['acc']:.0f} m ({fix['acc'] * 3.28:.0f} ft)" if fix.get("acc") else ""
+        st.success(f"Your location: {fix['lat']:.6f}, {fix['lon']:.6f}{acc_txt}")
+    else:
+        st.info("No location yet. Press the location button above (allow location access in your browser).")
+
+    def take_fix():
+        f = ss.get("gps_fix")
+        if f is None:
+            st.warning("No location yet. Press the location button first.")
+            return None
+        if f["id"] == ss.get("gps_used_id"):
+            st.warning("That's the same location reading as last time. If you've moved, press the location button again.")
+        ss.gps_used_id = f["id"]
+        return f
+
+    def recalibrate():
+        refs = ss.gps_refs
+        if "A" in refs and "B" in refs:
+            try:
+                ss.gps_cal = gm.calibrate(refs["A"], refs["B"])
+            except ValueError as e:
+                ss.pop("gps_cal", None)
+                st.error(str(e))
+
+    def lock(name):
+        tap = ss.ref_tap.get(name)
+        if tap is None:
+            st.warning(f"Choose the Ref {name} spot on the map first: pick '📍 Ref {name}' above the map and tap it, "
+                       "or use the quick button.")
+            return
+        f = take_fix()
+        if f:
+            ss.gps_refs[name] = {"green": tap, "lat": f["lat"], "lon": f["lon"], "acc": f.get("acc")}
+            recalibrate()
+
+    st.markdown("**Step 1: calibrate with two spots you can find on the map**")
+    st.caption("Stand at a spot, press the location button, mark that spot on the map (pick 📍 Ref A or Ref B above the "
+               "map and tap it), then press Lock. Choose two spots far apart, like the front and back of the green.")
+    q1, q2 = st.columns(2)
+    if q1.button("Ref A = front tip of the green", use_container_width=True):
+        ss.ref_tap["A"] = geom["front_ft"]
+    if q2.button("Ref B = back tip of the green", use_container_width=True):
+        ss.ref_tap["B"] = geom["back_ft"]
+    l1, l2, l3 = st.columns(3)
+    if l1.button("Lock Ref A here", use_container_width=True):
+        lock("A")
+    if l2.button("Lock Ref B here", use_container_width=True):
+        lock("B")
+    if l3.button("Clear references", use_container_width=True):
+        ss.gps_refs, ss.ref_tap = {}, {}
+        ss.pop("gps_cal", None)
+    status = lambda n: "locked ✓" if n in ss.gps_refs else ("spot chosen, not locked" if n in ss.ref_tap else "not set")
+    st.write(f"**Ref A:** {status('A')}   **Ref B:** {status('B')}")
+    cal = ss.get("gps_cal")
+    if cal:
+        st.success(f"Calibrated. The two reference spots are {cal['baseline_ft'] / 3:.0f} yd apart.")
+        for note in gm.quality_notes(cal):
+            st.warning(note)
+
+    st.markdown("**Step 2: set the ball and the hole**")
+    st.caption("Stand over the ball, press the location button, then press Set ball here. Do the same at the hole.")
+    p1, p2 = st.columns(2)
+    for label, key, col in (("Set ball here", "ball_coords", p1), ("Set hole here", "hole_coords", p2)):
+        if col.button(label, use_container_width=True):
+            if cal is None:
+                st.warning("Calibrate first (Step 1).")
+                continue
+            f = take_fix()
+            if f:
+                x, y = gm.to_green(cal, f["lat"], f["lon"])
+                cx = float(np.clip(x, geom["xmin_ft"], geom["xmax_ft"]))
+                cy = float(np.clip(y, geom["ymin_ft"], geom["ymax_ft"]))
+                ss[key] = {"x_ft": cx, "y_ft": cy}
+                off = float(np.hypot(x - cx, y - cy))
+                what = "Ball" if "ball" in key else "Hole"
+                if off > 3:
+                    st.warning(f"{what} placed at the nearest edge: GPS put you about {off:.0f} ft off the green.")
+                if f.get("acc"):
+                    st.caption(f"{what} set (GPS accuracy about ±{f['acc'] * 3.28:.0f} ft). Tap the map to fine-tune it.")
+
+    st.markdown("**Optional: paced putt length**")
+    st.number_input("Putt length in feet (0 = use the markers)", min_value=0.0, max_value=150.0, value=0.0, step=1.0,
+                    key="paced_len", help="Keeps the ball-to-hole direction from the markers but uses exactly this distance.")
+
+
+# --- 4. PAGE LAYOUT ---
+st.title("⛳ Green Reader")
+tab_help, tab_app = st.tabs(["📖 Tutorial", "⛳ Green Reader"])
+with tab_help:
+    render_tutorial()
+
+with tab_app:                                          # one page, top to bottom
+    top = st.container()                               # course, hole, stimp, marker mode
+    map_box = st.container()                           # heat map
+    gps_box = st.container()                           # GPS mode (beta), only filled when the switch is on
+    tune_box = st.expander("③ ⚙️ Fine-tune the read")  # advanced controls, right under the map
+    out_box = st.container()                           # aim point, putt length, how hard to hit it
+    chart_box = st.container()                         # trajectory chart
+    details_box = st.expander("📍 Details & comparison")
 
 with top:
+    st.markdown("##### ① Set up the putt")
     c1, c2, c3 = st.columns([2, 1, 2])
     course = c1.selectbox("Course", list(COURSES.keys()))
     hole_no = c2.selectbox("Hole", COURSES[course])
-    stimp = c3.slider("Stimp", 6.0, 13.0, 8.0, 0.5)
-    m1, m2 = st.columns([3, 1])
-    placement_mode = m1.radio("Tap the map to set the", ["🔴 Hole", "🔵 Ball"], horizontal=True)
-    m2.write("")
-    reset_markers = m2.button("Reset markers", use_container_width=True)
+    stimp = c3.slider("Stimp (green speed)", 6.0, 13.0, 8.0, 0.5,
+                      help="Lower = slower greens, higher = faster greens. Faster greens break more and need a softer hit.")
+    g1, g2 = st.columns([3, 1])
+    gps_on = (st.toggle if hasattr(st, "toggle") else st.checkbox)(
+        "📍 GPS mode (beta)", value=False, key="gps_on", help="Off by default. Turn it off any time to go back to normal.")
+    reset_markers = g2.button("Reset markers", use_container_width=True)
+    placement_mode = st.radio("Tap the map to set the", ["🔴 Hole", "🔵 Ball"] + (["📍 Ref A", "📍 Ref B"] if gps_on else []),
+                              horizontal=True)
 
 with tune_box:
     t1, t2 = st.columns(2)
@@ -214,6 +417,9 @@ with tune_box:
                             help="0 = colors only for direction, 1 = follow the arrows wherever they are.")
     double_boost = t2.slider("Double-arrow boost", 0.0, 1.0, 0.3, 0.05,
                              help="Extra steepness where double-head arrows are.")
+    ref_stimp = t1.slider("My stroke is calibrated for Stimp", 6.0, 13.0, 10.0, 0.5,
+                          help="'Hit it like a ... ft putt' is measured on a flat green at this speed. Pick the green speed "
+                               "you practice on or feel most comfortable with.")
     past_ft = t1.slider("Miss-past pace (ft)", 0.5, 3.0, 1.5, 0.25,
                         help="How far past the hole the ball would stop. Slower pace = more break.")
     use_arrows = t2.checkbox("Use the arrows printed on the map", value=True,
@@ -242,10 +448,30 @@ if reset_markers or st.session_state.get("marker_key") != (course, hole_no):   #
     st.session_state.hole_coords = {"x_ft": h0[0], "y_ft": h0[1]}
     st.session_state.marker_key = (course, hole_no)
     st.session_state.pop("last_click", None)
+if gps_on:
+    with gps_box:
+        render_gps_panel(geom)
 ball = (st.session_state.ball_coords["x_ft"], st.session_state.ball_coords["y_ft"])
 hole = (st.session_state.hole_coords["x_ft"], st.session_state.hole_coords["y_ft"])
 red_high = None if color_scale.startswith("Auto") else color_scale.startswith("Red = high")
 slope_args = (red_high, relief_ft, ignore_edge, use_arrows, arrow_trust, double_boost)
+
+hole_raw = hole
+paced = float(st.session_state.get("paced_len") or 0.0) if gps_on else 0.0
+if paced >= 1.0:                                       # paced length: keep the direction, use the exact distance
+    v = np.array(hole) - np.array(ball)
+    n = float(np.hypot(*v))
+    u = v / n if n > 0.3 else np.array([0.0, 1.0])
+    hole = tuple(float(c) for c in np.array(ball) + u * paced)
+
+marks = []
+if gps_on:
+    for nm, col in (("A", (255, 140, 0)), ("B", (150, 60, 200))):
+        if nm in st.session_state.get("ref_tap", {}):
+            marks.append((nm, st.session_state.ref_tap[nm], col))
+    if st.session_state.get("gps_cal") and st.session_state.get("gps_fix"):
+        f_ = st.session_state.gps_fix
+        marks.append(("you", gm.to_green(st.session_state.gps_cal, f_["lat"], f_["lon"]), (0, 160, 90)))
 
 too_close = np.hypot(hole[0] - ball[0], hole[1] - ball[1]) < 1.0
 sx, sy, meta = get_slope(heat_path, *slope_args)
@@ -253,25 +479,30 @@ sol = None if too_close else get_solution(heat_path, slope_args, ball, hole, sti
 
 # heat map (tapping it moves the marker chosen above)
 with map_box:
-    st.subheader(f"Hole #{hole_no}")
-    shown = draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows, show_ignored, show_detected)
+    st.subheader(f"② Heat map: Hole #{hole_no}")
+    shown = draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows, show_ignored, show_detected, marks)
     clicked = streamlit_image_coordinates(shown, key="map_click", width=DISPLAY_WIDTH)
     if clicked and clicked != st.session_state.get("last_click"):
         st.session_state.last_click = clicked
         scale = img.width / float(DISPLAY_WIDTH)
         cx, cy = pe.px_to_ft(geom, clicked["x"] * scale, clicked["y"] * scale)
-        key = "hole_coords" if "Hole" in placement_mode else "ball_coords"
-        st.session_state[key] = {"x_ft": cx, "y_ft": cy}
+        if "Ref" in placement_mode:
+            st.session_state.setdefault("ref_tap", {})[placement_mode[-1]] = (cx, cy)
+        else:
+            key = "hole_coords" if "Hole" in placement_mode else "ball_coords"
+            st.session_state[key] = {"x_ft": cx, "y_ft": cy}
         st.rerun()
     if geom["source"] != "yard labels":
         st.warning("Couldn't find the yard labels on this map, so the scale is an estimate and distances may be off.")
 
 # the numbers
 with out_box:
+    st.markdown("##### ④ Your numbers")
     if sol is None:
         st.info("Ball and hole are less than a foot apart. Tap the map to move one of them.")
     else:
-        stroke_ft = sol["flat_equiv_ft"]
+        slope_diff = sol["flat_equiv_ft"] - sol["dist_ft"]          # uphill (+) or downhill (-)
+        stroke_ft = sol["flat_equiv_ft"] * ref_stimp / stimp         # faster green = shorter stroke, slower = longer
         diff = stroke_ft - sol["dist_ft"]
         factor, severity = pe.classify_break(sol["aim_offset_ft"], sol["dist_ft"])
         cups = sol["aim_offset_ft"] * 12 / pe.CUP_IN
@@ -280,10 +511,13 @@ with out_box:
         k1.metric("🎯 Aim point", aim_txt, delta=f"≈ {cups:.1f} cups {sol['aim_side'].lower()} of the hole", delta_color="off")
         k2.metric("📏 Putt length", f"{sol['dist_ft']:.1f} ft", delta=f"{sol['dist_ft'] / 3:.1f} yd", delta_color="off")
         k3.metric("⚡ Hit it like a", f"{stroke_ft:.1f} ft putt", delta=f"{diff:+.1f} ft vs. putt length", delta_color="off")
-        play = "uphill" if diff > 0.3 else "downhill" if diff < -0.3 else "about flat"
+        play = "uphill" if slope_diff > 0.3 else "downhill" if slope_diff < -0.3 else "about flat"
+        speed_note = "" if abs(stimp - ref_stimp) < 0.25 else (
+            f" Stimp {stimp:g} is {'slower' if stimp < ref_stimp else 'faster'} than your Stimp {ref_stimp:g} reference, "
+            f"so the stroke is {'longer' if stimp < ref_stimp else 'shorter'}.")
         st.caption(f"{severity} break ({factor:.2f}x), "
-                   f"{'right-to-left' if sol['aim_side'] == 'Right' else 'left-to-right'}, "
-                   f"playing {play}. 'Hit it like' is the flat-green distance that gives the same roll speed.")
+                   f"{'right-to-left' if sol['aim_side'] == 'Right' else 'left-to-right'}, playing {play}. "
+                   f"'Hit it like' is how far this stroke would roll a ball on a flat Stimp {ref_stimp:g} green.{speed_note}")
         if not sol["reached"] or abs(sol["hit_error_ft"]) > 0.15:
             st.warning("The solver could not make this putt drop with the current settings. "
                        "Try lowering Green relief or checking the color setting.")
@@ -291,7 +525,7 @@ with out_box:
 # the graph
 with chart_box:
     if sol is not None:
-        st.subheader("Where to aim and how it breaks")
+        st.subheader("⑤ Where to aim and how it breaks")
         st.caption("Green line: aim line. Blue curve: expected roll. Hole at the top, ball at the bottom.")
         fig = trajectory_chart(sol)
         st.pyplot(fig, use_container_width=True)
@@ -301,6 +535,13 @@ with details_box:
     st.write(f"**Green:** {geom['width_ft'] / 3:.0f} yd wide x {geom['depth_ft'] / 3:.0f} yd deep, scale read from the "
              f"map's yard labels. Positions are measured from the green's left edge and the map's 0-yard line.")
     st.write(f"**Ball:** {ball[0]:.1f} ft, {ball[1]:.1f} ft   **Hole:** {hole[0]:.1f} ft, {hole[1]:.1f} ft")
+    if gps_on:
+        cal_ = st.session_state.get("gps_cal")
+        st.write("**GPS mode:** on. " + (f"Calibrated (references {cal_['baseline_ft'] / 3:.0f} yd apart, "
+                 f"distance check {cal_['scale_ratio'] * 100:.0f}%)." if cal_ else "Not calibrated yet."))
+        if paced >= 1.0:
+            st.write(f"**Paced length in use:** {paced:.0f} ft. The hole is drawn {paced:.0f} ft from the ball along the "
+                     f"line to your hole marker (the marker itself is {np.hypot(hole_raw[0] - ball[0], hole_raw[1] - ball[1]):.0f} ft away).")
     if sol is not None:
         old_off, old_side = classic_read(img, geom, ball, hole, stimp)
         st.write(f"**New read:** {format_feet_inches(sol['aim_offset_ft'])} {sol['aim_side']}   "
