@@ -28,8 +28,23 @@ if not hasattr(pe, "auto_geom") or "depth_yd" not in inspect.signature(pe.auto_g
 if not hasattr(gm, "calibrate"):
     _needs.append("gps_mode.py")
 if _needs:
+    _here = os.path.dirname(os.path.abspath(globals().get("__file__", ".")))
+    _where = getattr(pe, "__file__", "unknown")
+    try:
+        _sig = str(inspect.signature(pe.auto_geom))
+    except Exception:
+        _sig = " (not found)"
+    try:
+        _lines = sum(1 for _ in open(_where))
+    except Exception:
+        _lines = "?"
+    _near = sorted(f for f in os.listdir(_here) if f.lower().startswith(("putt", "gps", "app", "requirements")))
     st.error("This app.py needs the latest " + " and ".join(_needs) + ". The copy in your repository is older. "
              "Upload the latest version of each file into the same folder as app.py, then reboot the app.")
+    st.code(f"putt_engine.py loaded from: {_where} ({_lines} lines)\n"
+            f"auto_geom{_sig}\n"
+            f"files next to app.py: {_near}\n\n"
+            "expected: putt_engine.py, 623 lines, auto_geom(img_np, depth_yd=None, width_yd=None)")
     st.stop()
 
 def discover_courses(root="assets"):
