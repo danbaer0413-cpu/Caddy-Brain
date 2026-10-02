@@ -39,12 +39,69 @@ def _label_rows(img_np):
     return best
 
 
-def auto_geom(img_np):
+# ---- reading the yard-label numbers (tiny template reader; the labels all use one font) ----
+DIGITS = {'0': 'AAAAAAAAAAAAAAAAAAAAT6CnaREAAAAAAAB8+f75/tMbAAAAABbm/5JM0P6kAAAAAG3+1QAAMfP0AAAAAKD/pAAAA+D/KwAAALz/jwAAANT+TQAAAMX/hQAAAM/+ZAAAALD/kAAAANb+WQAAAIz9rAAACd//NQAAAEL34wAASvf5AgAAAAPZ/qJd2f63AAAAAABH5/7++scUAAAAAAAAHl51UQkAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', '1': 'AAAAAAAAAAAAAAAAAAAAAAAADxUBAAAAAAAAAABX1uVNAAAAAAAABH7y/v5YAAAAAAAAofXP6v9ZAAAAAAAAt5Qj0/5YAAAAAAAADgIA1v5YAAAAAAAAAAAA1/9YAAAAAAAAAAAA1v5YAAAAAAAAAAAA1v5YAAAAAAAAAAAA1v5YAAAAAAAAAAAA1v5YAAAAAAAAAAAA1/5YAAAAAAAAAAAAoME7AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', '2': 'AAAAAAAAAAAAAAAAAAAAChETDgUAAAAAAANTt87UxZgXAAAAAFPu8tXI8/ypAAAAABmjYBYOhPr5AwAAAAAEAAAAKvP+BgAAAAAAAAAAaPzYAAAAAAAAAAAe3vNSAAAAAAAAABzB+I8AAAAAAAAAG8X3hQcAAAAAAAAWwvSJAAAAAAAAABS4/MU0ISEiDAAAAJv8/urW1dbXagAAAKPd3d3c3d3dbQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', '3': 'AAAAAAAAAAAAAAAAAAAAFUx4gmAXAAAAAABg6f/9+v/pWAAAAAAAwY9RWc794gAAAAAAAAAAAEz98gAAAAAAAAAAAHv/qgAAAAAAAHeQu+eaAAAAAAAAANL4/OBlAAAAAAAAACtIYsf/1wAAAAAAAAAAACjt/wAAAAAAAAAAACXx/wAAAACofzYzYt/+8QAAAAC6/P////roZAAAAAAAUHaFd0sAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', '4': 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABE//xQAAAAAAAAAAzc/vxPAAAAAAAAAKno8/1PAAAAAAAAXfJV9P5QAAAAAAAG5LAA/v5PAAAAAACs6wgA//xQAAAAAGjzawAA//xcAAAAAO/5v6qt/v7QfQAAAP7////+/v7/wwAAAAMEBAQJ//13AAAAAAAAAAAA//1OAAAAAAAAAAAApqQnAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', '5': 'AAAAAAAAAAAAAAAAAAAAPlJTVFVTEwAAAAAA1v//////dgAAAAAA3P6uk5WUNwAAAAAQ5f8CAAAAAAAAAAAe7PgAAAAAAAAAAAAx9/7w8OSjAAAAAAAm6e7u8Pz+tAAAAAAAAAAAAJz8/wAAAAAAAAAAAB3s/wAAAAAAAAAAACfw/gAAAAByl1otWNj9twAAAACJ/v////vaGgAAAAAAXoqQeD8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', '6': 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM8jw8vWfAAAAAAA67vzv07iCAAAAAADU/4YAAAAAAAAAAEb7vgAAAAAAAAAAAJP/elWepWoAAAAAAL/+1evY8/7IAAAAAND+7kIAWvD+MwAAAL//jwAAAMT/cgAAAI//pAAAAMf/ZQAAADv28B8AQu3/HwAAAACf+/Hm9vmfAAAAAAAAbuLx3HoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', '7': 'AAAAAAAAAAAAAAAAADAwMTAvLzAvEAAAAN/f3t7e2t7fbwAAALCysrGwxvb/XAAAAAAAAAAAVPjpCgAAAAAAAAAAtv6TAAAAAAAAAAAk/esdAAAAAAAAAACT/rEAAAAAAAAAABjn+jsAAAAAAAAAAIz+wAAAAAAAAAAACeH8XQAAAAAAAAAAbvvnAAAAAAAAAAAAz/+HAAAAAAAAAAAbsqYWAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', '8': 'AAAAAAAAAAAAAAAAAAAAI0FMORUAAAAAAABXx9zZ3K86AAAAACHq+JNtu/vLAAAAAEr82AAANfH3AAAAACTr5zcHb/fLAAAAAAB88dy19ck3AAAAAAAd3Pv3/JQAAAAAAAqi9LWO5+huAAAAAHL3thUASOLuIwAAALn/bgAAAML9XAAAAJT9uC4aRuH8OgAAACvT9NC94vClAAAAAAA6jq63sXIOAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', '9': 'AAAAAAAAAAAAAAAAAAAAR4eZaRAAAAAAAACv+Pr0/eAoAAAAAFn67VMwvf7DAAAAAK3/hQAAD+X/GwAAANP/cAAAAM7/SgAAALH9ugAAROz/bgAAAFf4+9K83/X+ZwAAAAB8+//9dMv+RQAAAAAAAAAAANr7AAAAAAAAAAAAfPm2AAAAAABIWHm//+4ZAAAAAADd/v/80kMAAAAAAABSb2xDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'}
+_GLYPH_W, _GLYPH_H = 12, 16
+
+
+def _label_glyphs(a, rows):
+    """For each label row, the list of digit images (darkness 0..1, centred on a small canvas)."""
+    H, W, _ = a.shape
+    lum = a.astype(float).mean(-1)
+    sat = a.max(-1) - a.min(-1)
+    out = []
+    for row in rows:
+        y0, y1 = max(0, int(round(row)) - 9), int(round(row)) + 10
+        lw = int(0.14 * W)
+        ink = (lum[y0:y1, :lw] < 150) & (sat[y0:y1, :lw] < 60)
+        cols = np.where(ink.any(0))[0]
+        groups = [[cols[0]]] if len(cols) else []
+        for c in cols[1:]:
+            (groups[-1].append(c) if c - groups[-1][-1] == 1 else groups.append([c]))
+        glyphs = []
+        for g in groups:
+            r = np.where(ink[:, g[0]:g[-1] + 1].any(1))[0]
+            dark = 1.0 - lum[y0:y1, :lw][r.min():r.max() + 1, g[0]:g[-1] + 1] / 255.0
+            dark = np.clip((dark - 0.2) / 0.7, 0, 1)
+            h, w = dark.shape
+            if h > _GLYPH_H or w > _GLYPH_W:
+                glyphs.append(None)
+                continue
+            canvas = np.zeros((_GLYPH_H, _GLYPH_W))
+            canvas[(_GLYPH_H - h) // 2:(_GLYPH_H - h) // 2 + h, (_GLYPH_W - w) // 2:(_GLYPH_W - w) // 2 + w] = dark
+            glyphs.append(canvas)
+        out.append(glyphs)
+    return out
+
+
+def _read_label_values(img_np, rows):
+    """Whole-number values of the yard labels at these rows, or None if any glyph can't be read."""
+    import base64
+    tmpl = {c: np.frombuffer(base64.b64decode(b), np.uint8).reshape(_GLYPH_H, _GLYPH_W) / 255.0 for c, b in DIGITS.items()}
+    vals = []
+    for glyphs in _label_glyphs(img_np, rows):
+        txt = ""
+        for g in glyphs:
+            if g is None:
+                return None
+            best = min(tmpl, key=lambda c: min(np.sum((np.roll(np.roll(g, dy, 0), dx, 1) - tmpl[c]) ** 2)
+                                                for dy in (-1, 0, 1) for dx in (-1, 0, 1)))
+            txt += best
+        if not txt:
+            return None
+        vals.append(int(txt))
+    return vals
+
+
+def auto_geom(img_np, depth_yd=None, width_yd=None):
     """Work out the scale from the map itself, so no per-hole width or depth is needed.
 
     The yard labels down the side are evenly spaced and the last one is always -5, i.e. 5 yards below
     the 0 line, which fixes pixels per yard (refined by rounding the top label to whole yards).
-    x = 0 is the left edge of the green, y = 0 is the map's 0-yard line. Pixels are assumed square.
+    x = 0 is the left edge of the green, y = 0 is the map's 0-yard line.
+
+    Maps with no yard labels (some print "D 29 yd / W 19 yd" instead) can be given depth_yd and width_yd by hand;
+    the green's outline then spans exactly that, and y = 0 is the front (bottom) of the green.
     """
     inside, _ = inside_mask(img_np)
     ys, xs = np.nonzero(inside)
@@ -53,24 +110,39 @@ def auto_geom(img_np):
     gx0, gx1, gy0, gy1 = xs.min(), xs.max(), ys.min(), ys.max()
     labels = _label_rows(img_np)
     source = "yard labels"
+    labels_read = False
+    ppx = ppy = None
     if len(labels) >= 5:
         top, y0, ym5 = labels[0], labels[-2], labels[-1]
-        ppy0 = (ym5 - y0) / 5.0                                  # px per yard from the -5 label
-        n_yd = max(1, round((y0 - top) / ppy0))                  # top label is a whole number of yards
+        ppy0 = (ym5 - y0) / 5.0                                  # px per yard from the -5 label (rough: smaller font)
+        vals = _read_label_values(img_np, labels[:-1])           # the top..0 labels, read as numbers
+        n_yd = None
+        if vals:
+            m = len(vals)
+            if vals[-1] == 0 and vals[0] > 0 and all(abs(v - vals[0] * (m - 1 - k) / (m - 1)) <= 0.6 for k, v in enumerate(vals)):
+                n_yd, labels_read = vals[0], True                # labels agree with an evenly spaced scale: trust them
+        if n_yd is None:
+            n_yd = max(1, round((y0 - top) / ppy0))              # fallback: round to whole yards
         ppy_yd = (y0 - top) / n_yd
         if abs(ppy_yd / ppy0 - 1) > 0.15:
             ppy_yd = ppy0
+        ppx = ppy = ppy_yd / 3.0
+    elif depth_yd:
+        source = "entered"
+        y0 = float(gy1)
+        ppy = (gy1 - gy0) / (depth_yd * 3.0)
+        ppx = (gx1 - gx0) / (width_yd * 3.0) if width_yd else ppy
     else:
         source = "estimate"
-        ppy_yd, y0 = (gy1 - gy0) / 28.0, float(gy1)              # assume a 28 yard deep green
-    ppf = ppy_yd / 3.0
+        y0 = float(gy1)
+        ppx = ppy = (gy1 - gy0) / 28.0 / 3.0                     # assume a 28 yard deep green
     front_x = xs[ys >= gy1 - 2].mean()                          # front-most and back-most points of the green
     back_x = xs[ys <= gy0 + 2].mean()
-    return dict(x0=float(gx0), y0=float(y0), ppx=ppf, ppy=ppf, xmin_ft=0.0, xmax_ft=(gx1 - gx0) / ppf,
-                ymin_ft=(y0 - gy1) / ppf, ymax_ft=(y0 - gy0) / ppf, width_ft=(gx1 - gx0) / ppf,
-                depth_ft=(gy1 - gy0) / ppf, source=source, px_per_yd=float(ppy_yd),
-                front_ft=((front_x - gx0) / ppf, (y0 - gy1) / ppf),
-                back_ft=((back_x - gx0) / ppf, (y0 - gy0) / ppf))
+    return dict(x0=float(gx0), y0=float(y0), ppx=ppx, ppy=ppy, xmin_ft=0.0, xmax_ft=(gx1 - gx0) / ppx,
+                ymin_ft=(y0 - gy1) / ppy, ymax_ft=(y0 - gy0) / ppy, width_ft=(gx1 - gx0) / ppx,
+                depth_ft=(gy1 - gy0) / ppy, source=source, px_per_yd=float(ppy * 3.0), labels_read=labels_read,
+                front_ft=((front_x - gx0) / ppx, (y0 - gy1) / ppy),
+                back_ft=((back_x - gx0) / ppx, (y0 - gy0) / ppy))
 
 
 def default_markers(g):
@@ -108,12 +180,12 @@ def _grow(m, n):
 
 
 def outline_mask(img_np, grow_px=2):
-    """True on the solid green boundary line (muted green, e.g. ~(100,145,100)) plus a small margin.
-    The pale-green middle of the heat colors is much lighter, so a luminance cap keeps it out."""
+    """True on the solid green boundary line (a dark, muted green such as (100,145,100) or (76,102,65)) plus a small
+    margin. The greens inside the heat colors are much lighter, so the luminance cap keeps them out."""
     a = img_np.astype(int)
     r, g, b = a[..., 0], a[..., 1], a[..., 2]
     lum = a.mean(-1)
-    return _grow((g - r > 30) & (g - b > 30) & (lum < 175), grow_px)
+    return _grow((g - r > 8) & (g - b > 22) & (lum < 125), grow_px)
 
 
 def _outside_region(line):
@@ -130,25 +202,58 @@ def _outside_region(line):
         out = n
 
 
+def _color_region(img_np, k=3):
+    """The putting surface found by color: the biggest blob of saturated heat color, with holes (arrows, dashed lines,
+    a pale-green middle band) filled in. Used when the outline can't be traced."""
+    h, w, _ = img_np.shape
+    rgb = img_np[:h // k * k, :w // k * k].astype(float) / 255.0
+    sat = (rgb.max(-1) - rgb.min(-1)) / np.maximum(rgb.max(-1), 1e-6)
+    colorful = (sat > 0.22).reshape(h // k, k, w // k, k).mean((1, 3)) > 0.5
+    comps = _label(colorful)
+    if not comps:
+        return None
+    blob = np.zeros(colorful.shape, bool)
+    best = max(comps, key=len)
+    blob[best[:, 1].astype(int), best[:, 0].astype(int)] = True
+    region = ~_outside_region(blob)                      # everything the blob encloses, holes included
+    region = np.kron(region, np.ones((k, k), bool))
+    return np.pad(region, ((0, h - region.shape[0]), (0, w - region.shape[1])), mode="edge")
+
+
 def inside_mask(img_np):
     """Full-res bool mask of the putting surface (inside the solid outline, outline excluded)."""
     line = outline_mask(img_np)
     h, w = line.shape
     if line.mean() < 0.002:
-        return np.ones((h, w), bool), line
+        reg = _color_region(img_np)
+        return (reg if reg is not None else np.ones((h, w), bool)), line
     k = 3
     lc = line[:h // k * k, :w // k * k].reshape(h // k, k, w // k, k).max((1, 3))   # max-pool so the flood can't leak
-    outside = np.kron(_outside_region(lc), np.ones((k, k), bool))
+    outside_c = _outside_region(_grow(lc, 1))                # thicken the barrier so a small gap in the outline can't leak
+    outside = np.kron(_grow(outside_c, 1), np.ones((k, k), bool))   # then take back the extra ring we added
     outside = np.pad(outside, ((0, h - outside.shape[0]), (0, w - outside.shape[1])), mode="edge")
     inside = ~outside & ~line
     if inside.mean() < 0.08:                      # outline isn't closed; don't trust the flood fill
         return ~line, line
     ic = inside[:h // k * k, :w // k * k].reshape(h // k, k, w // k, k).min((1, 3))
-    best = max(_label(ic), key=len)               # the putting surface is the largest enclosed region
+    rgb = img_np[:h // k * k, :w // k * k].astype(float) / 255.0
+    sat = ((rgb.max(-1) - rgb.min(-1)) / np.maximum(rgb.max(-1), 1e-6)).reshape(h // k, k, w // k, k).mean((1, 3))
+    # the putting surface is the enclosed region full of heat color; a picture frame or the white margin around the
+    # green can be a bigger enclosed region but has almost no color
+    best = max(_label(ic), key=lambda P: (int((sat[P[:, 1].astype(int), P[:, 0].astype(int)] > 0.25).sum()), len(P)))
     keep = np.zeros(ic.shape, bool)
     keep[best[:, 1].astype(int), best[:, 0].astype(int)] = True
     keep = np.pad(np.kron(keep, np.ones((k, k), bool)), ((0, h - keep.shape[0] * k), (0, w - keep.shape[1] * k)), mode="edge")
-    return inside & keep, line
+    inside = inside & keep
+    inside = inside | (~inside & ~_outside_region(inside))    # fill pinholes (arrows over yellow-green can look like outline)
+    # sanity check: the putting surface is mostly heat color. If it isn't (a frame or white margin leaked in), trace by color
+    rgb_all = img_np.astype(float) / 255.0
+    sat_all = (rgb_all.max(-1) - rgb_all.min(-1)) / np.maximum(rgb_all.max(-1), 1e-6)
+    if (sat_all[inside] > 0.25).mean() < 0.5:
+        reg = _color_region(img_np)
+        if reg is not None and 0.05 < reg.mean() < 0.9:
+            return reg, line
+    return inside, line
 
 
 def _label(mask):
@@ -192,28 +297,45 @@ def detect_arrows(img_np, inside):
     Direction comes from the shaft axis (PCA); the head end is the heavier end of the stroke.
     """
     lum = img_np.astype(float).mean(-1)
+    f = max(1.0, max(lum.shape) / 480.0)                   # size factor: maps ~480 px tall are the baseline
     # strokes are the slate-gray pixels that are clearly darker than the heat color around them,
     # which works on red, pale-green and blue areas alike
-    core = (lum < 0.72 * _box_mean(lum, 9)) & (lum < 135) & inside
+    core_all = (lum < 0.72 * _box_mean(lum, 9)) & (lum < 135) & inside
+    # dashed guide lines (some maps draw a black crosshair through the green): columns or rows that are dark over a big
+    # share of the green. They are masked out of the colors like arrows, but are not mistaken for arrows themselves.
+    core = core_all.copy()
+    band = int(round(5 * f))
+    col_frac = core_all.sum(0) / np.maximum(inside.sum(0), 1)
+    row_frac = core_all.sum(1) / np.maximum(inside.sum(1), 1)
+    for x in np.nonzero((col_frac > 0.35) & (inside.sum(0) > 0.3 * inside.sum(0).max()))[0]:
+        core[:, max(0, x - band):x + band + 1] = False
+    for y in np.nonzero((row_frac > 0.35) & (inside.sum(1) > 0.3 * inside.sum(1).max()))[0]:
+        core[max(0, y - band):y + band + 1, :] = False
+    near_edge = _grow(~inside, 1)
     arrows = []
     for P in _label(core):
         n = len(P)
-        if n < 10:
+        if near_edge[P[:, 1].astype(int), P[:, 0].astype(int)].any():
+            continue
+        if n < 10 * f:
             continue
         c = P.mean(0)
         w, v = np.linalg.eigh(np.cov((P - c).T))
         u = v[:, 1]
         t = (P - c) @ u
         length = t.max() - t.min()
-        if not (6 <= length <= 40) or np.sqrt(w[1] / max(w[0], 1e-6)) < 1.3:
+        if not (6 * f <= length <= 40 * f) or np.sqrt(w[1] / max(w[0], 1e-6)) < 1.3:
             continue                                  # text, specks, or merged clutter
+        asym = abs(t.max() + t.min()) / length               # an arrowhead puts extra ink at one end; dashes and specks don't
+        if asym < 0.06:
+            continue
         sign = 1.0 if (t.max() + t.min()) < 0 else -1.0   # mass sits toward the head
-        arrows.append({"c": c, "u": u * sign, "n": n, "length": length})
+        arrows.append({"c": c, "u": u * sign, "n": n, "length": length, "weight": min(1.0, asym / 0.2)})
     if arrows:
         med = np.median([x["n"] for x in arrows])
         for x in arrows:
             x["strength"] = 2.0 if x["n"] > 1.2 * med else 1.0
-    return arrows, _grow(core, 1)
+    return arrows, _grow(core_all, 1)
 
 
 def _shift(a, dy, dx):
@@ -253,7 +375,7 @@ def _arrow_field(arrows, shape, step, sigma):
     X, Y = np.meshgrid((np.arange(W) + 0.5) * step, (np.arange(H) + 0.5) * step)
     vx, vy, conf, st = (np.zeros((H, W)) for _ in range(4))
     for a in arrows:
-        w = np.exp(-((X - a["c"][0]) ** 2 + (Y - a["c"][1]) ** 2) / (2 * sigma ** 2))
+        w = np.exp(-((X - a["c"][0]) ** 2 + (Y - a["c"][1]) ** 2) / (2 * sigma ** 2)) * a.get("weight", 1.0)
         vx += w * a["u"][0]; vy += w * a["u"][1]; conf += w; st += w * a["strength"]
     return vx, vy, conf, st / np.maximum(conf, 1e-9)
 
@@ -273,7 +395,19 @@ def build_slope_field(img_np, geom, red_is_high=None, relief_ft=1.0, step=4, ign
     valid = inside & ~arrow_px
 
     a = img_np.astype(float)
-    h_full = (a[..., 0] - a[..., 2]) / 255.0              # warm minus cool, -1..1
+    h_full = (a[..., 0] - a[..., 2]) / 255.0              # warm minus cool, -1..1 (red-to-pale-green-to-blue maps)
+    rgb = a / 255.0
+    mx, mn = rgb.max(-1), rgb.min(-1)
+    sat = (mx - mn) / np.maximum(mx, 1e-6)
+    d_ = np.maximum(mx - mn, 1e-6)
+    hue = 60.0 * np.where(mx == rgb[..., 0], ((rgb[..., 1] - rgb[..., 2]) / d_) % 6,
+                          np.where(mx == rgb[..., 1], (rgb[..., 2] - rgb[..., 0]) / d_ + 2, (rgb[..., 0] - rgb[..., 1]) / d_ + 4))
+    yellow = valid & (sat > 0.5) & (mx > 0.6) & (hue > 35) & (hue < 75)
+    color_model = "r-b"
+    if yellow.sum() > 0.02 * max(valid.sum(), 1):         # a full rainbow scale: red and yellow look alike in r-b, so use hue
+        h_full = -np.where(hue > 300, hue - 360, hue) / 240.0
+        valid = valid & (sat > 0.08)
+        color_model = "hue"
     h, cnt = _block_mean(h_full, valid, step)
     ignored = cnt < 0.3 * step * step
     h = _blur(_fill_masked(h, ignored))
@@ -284,7 +418,7 @@ def build_slope_field(img_np, geom, red_is_high=None, relief_ft=1.0, step=4, ign
     dh_dpy, dh_dpx = np.gradient(h, step, step)
     cx_, cy_ = dh_dpx * ppx, -dh_dpy * ppy                # uphill gradient, feet space (red = high)
 
-    meta = {"step": step, "ignored": ignored, "arrows": arrows, "n_double": 0, "agreement": None,
+    meta = {"step": step, "ignored": ignored, "arrows": arrows, "n_double": 0, "agreement": None, "color_model": color_model,
             "red_is_high": True if red_is_high is None else bool(red_is_high), "used_arrows": False}
 
     if arrows:
@@ -301,6 +435,9 @@ def build_slope_field(img_np, geom, red_is_high=None, relief_ft=1.0, step=4, ign
         if red_is_high is None and raw is not None:
             meta["red_is_high"] = raw >= 0.5
         meta["agreement"] = None if raw is None else (raw if meta["red_is_high"] else 1 - raw)
+        if color_model == "hue":
+            for x in arrows:
+                x["strength"] = 1.0
         meta["n_double"] = int(sum(x["strength"] > 1 for x in arrows))
 
     if not meta["red_is_high"]:
@@ -309,7 +446,7 @@ def build_slope_field(img_np, geom, red_is_high=None, relief_ft=1.0, step=4, ign
     mag = np.hypot(dcx, dcy)
 
     if use_arrows and arrows:
-        vx, vy, conf, mean_st = _arrow_field(arrows, h.shape, step, sigma=25.0)
+        vx, vy, conf, mean_st = _arrow_field(arrows, h.shape, step, sigma=25.0 * max(1.0, max(img_np.shape[:2]) / 480.0))
         dax, day = vx / ppx, -vy / ppy                    # arrow downhill, feet space
         dn = np.maximum(np.hypot(dax, day), 1e-9)
         dax, day = dax / dn, day / dn

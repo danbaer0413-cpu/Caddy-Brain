@@ -1,4 +1,5 @@
 import os
+import re
 import numpy as np
 import streamlit as st
 import matplotlib
@@ -13,7 +14,37 @@ import gps_mode as gm
 # --- 1. CONFIG & SESSION STATE ---
 st.set_page_config(page_title="CaddyBrain Green Reader", page_icon="⛳", layout="centered")
 
-COURSES = {"Mercer Oaks East": list(range(1, 19))}   # green size and scale are read from each map automatically
+def discover_courses(root="assets"):
+    """Every folder in assets/ is a course; every file named <hole>_Heat.png (or .jpg/.jpeg/.webp) is a hole.
+    Adding a course is just adding a folder of images. Returns {display name: {hole number: image path}}."""
+    found = {}
+    if os.path.isdir(root):
+        for folder in sorted(os.listdir(root)):
+            holes = {}
+            d = os.path.join(root, folder)
+            for fn in (os.listdir(d) if os.path.isdir(d) else []):
+                m = re.match(r"^(\d+)_heat\.(png|jpe?g|webp)$", fn, re.I)
+                if m:
+                    holes[int(m.group(1))] = os.path.join(d, fn)
+            if holes:
+                found[folder.replace("_", " ").title()] = holes
+    return found
+
+
+COURSES = discover_courses()
+
+
+def load_scales(course_name, hole):
+    """Depth/width in yards for maps without yard labels, from an optional scales.json in the course's folder:
+    {"1": {"depth_yd": 29, "width_yd": 19}, "2": {"depth_yd": 29, "width_yd": 24}}"""
+    try:
+        import json
+        folder = os.path.dirname(next(iter(COURSES[course_name].values())))
+        with open(os.path.join(folder, "scales.json")) as f:
+            e = json.load(f).get(str(hole), {})
+        return float(e.get("depth_yd", 0) or 0), float(e.get("width_yd", 0) or 0)
+    except Exception:
+        return 0.0, 0.0
 
 DISPLAY_WIDTH = 640
 
@@ -37,16 +68,17 @@ def load_heat_map(path):
 
 
 @st.cache_data
-def get_geom(path):
-    """Scale and origin read from the map itself (yard labels + green outline)."""
+def get_geom(path, depth_yd=0.0, width_yd=0.0):
+    """Scale and origin read from the map itself (yard labels + green outline); depth/width typed in only when
+    the map has no yard labels."""
     arr = np.array(load_heat_map(path))
-    return pe.auto_geom(arr) or pe.make_geom(arr.shape[1], arr.shape[0], 42.0, 84.0)
+    return pe.auto_geom(arr, depth_yd or None, width_yd or None) or pe.make_geom(arr.shape[1], arr.shape[0], 42.0, 84.0)
 
 
 @st.cache_data
-def get_slope(path, red_is_high, relief_ft, ignore_edge, use_arrows, arrow_trust, double_boost):
+def get_slope(path, red_is_high, relief_ft, ignore_edge, use_arrows, arrow_trust, double_boost, depth_yd=0.0, width_yd=0.0):
     img = load_heat_map(path)
-    geom = get_geom(path)
+    geom = get_geom(path, depth_yd, width_yd)
     sx, sy, meta = pe.build_slope_field(np.array(img), geom, red_is_high, relief_ft, ignore_outline=ignore_edge,
                                         use_arrows=use_arrows, arrow_trust=arrow_trust, double_boost=double_boost)
     return sx, sy, meta
@@ -164,23 +196,16 @@ def trajectory_chart(sol):
 
 
 # --- 3. TUTORIAL TAB ---
-def find_heat_path(course_name, hole):
-    folder_ = course_name.lower().replace(" ", "_")
-    return next((f"assets/{folder_}/{n}" for n in (f"{hole}_Heat.png", f"{hole}_heat.png")
-                 if os.path.exists(f"assets/{folder_}/{n}")), None)
-
-
 @st.cache_data
 def tutorial_example():
     """A sample read on the first hole that has a heat map, so the tutorial can show the real thing."""
     try:
         for course_name, holes in COURSES.items():
-            for hole in holes:
-                p = find_heat_path(course_name, hole)
-                if p:
+            for hole, p in sorted(holes.items()):
+                if p and pe.auto_geom(np.array(load_heat_map(p))) is not None and get_geom(p)["source"] == "yard labels":
                     img_, g_ = load_heat_map(p), get_geom(p)
                     b_, h_ = pe.default_markers(g_)
-                    args = (None, 1.0, True, True, 0.7, 0.3)
+                    args = (None, 1.0, True, True, 0.7, 0.3, 0.0, 0.0)
                     sx_, sy_, m_ = get_slope(p, *args)
                     sol_ = get_solution(p, args, b_, h_, 10.0, 1.5)
                     return draw_heat_overlay(img_, g_, b_, h_, sol_, sx_, sy_, m_, False), hole
@@ -254,7 +279,14 @@ def render_tutorial():
             "straight, lower it if they look too curvy.\n"
             "- **Arrow trust and double-arrow boost:** how much the app follows the printed arrows versus the colors.\n"
             "- **Heat map colors:** *Auto* works out whether red is high ground from the arrows. You rarely need to change it.\n"
-            "- **Scale:** the green's size is read from the yard labels on each map. You never enter widths or depths.\n"
+            "- **Scale:** the green's size is read from the yard labels on each map. Maps without yard labels ask you for the "
+            "depth (D) and width (W) printed on them.\n"
+            "- **Adding a course:** make a folder for it inside `assets/` (for example `assets/pine_valley/`) and put each hole's "
+            "heat map in it named `1_Heat.png`, `2_Heat.png`, and so on (`.jpg` works too). The course and its holes appear "
+            "automatically. No code changes.\n"
+            "- **Maps with D and W printed instead of yard labels:** add a file called `scales.json` to the course folder, "
+            "like `{\"1\": {\"depth_yd\": 29, \"width_yd\": 19}, \"2\": {\"depth_yd\": 29, \"width_yd\": 24}}`, and the app "
+            "uses those numbers automatically.\n"
             "- **Details & comparison** (bottom of the page) shows the green size, coordinates, and how many arrows were found.")
 
 
@@ -386,6 +418,7 @@ with tab_help:
 
 with tab_app:                                          # one page, top to bottom
     top = st.container()                               # course, hole, stimp, marker mode
+    scale_box = st.container()                         # only used for maps with no yard labels
     map_box = st.container()                           # heat map
     gps_box = st.container()                           # GPS mode (beta), only filled when the switch is on
     tune_box = st.expander("③ ⚙️ Fine-tune the read")  # advanced controls, right under the map
@@ -396,8 +429,12 @@ with tab_app:                                          # one page, top to bottom
 with top:
     st.markdown("##### ① Set up the putt")
     c1, c2, c3 = st.columns([2, 1, 2])
+    if not COURSES:
+        st.error("No heat maps found. Put each course in its own folder under `assets/` (for example "
+                 "`assets/pine_valley/`) with files named `1_Heat.png`, `2_Heat.png`, and so on. See the Tutorial tab.")
+        st.stop()
     course = c1.selectbox("Course", list(COURSES.keys()))
-    hole_no = c2.selectbox("Hole", COURSES[course])
+    hole_no = c2.selectbox("Hole", sorted(COURSES[course]))
     stimp = c3.slider("Stimp (green speed)", 6.0, 13.0, 8.0, 0.5,
                       help="Lower = slower greens, higher = faster greens. Faster greens break more and need a softer hit.")
     g1, g2 = st.columns([3, 1])
@@ -433,20 +470,33 @@ with tune_box:
     show_detected = o2.checkbox("Detected arrows", value=False, help="Orange = single head, purple = double head.")
     show_ignored = o3.checkbox("Ignored edge pixels", value=False, help="Tinted magenta.")
 
-folder = course.lower().replace(" ", "_")
-heat_path = next((f"assets/{folder}/{n}" for n in (f"{hole_no}_Heat.png", f"{hole_no}_heat.png")
-                  if os.path.exists(f"assets/{folder}/{n}")), None)
+heat_path = COURSES[course].get(hole_no)
 if not heat_path:
-    st.warning(f"Heat map image not found for Hole #{hole_no} in `assets/{folder}/`.")
+    st.warning(f"Heat map image not found for Hole #{hole_no}.")
     st.stop()
 
 img = load_heat_map(heat_path)
+depth_yd = width_yd = 0.0
 geom = get_geom(heat_path)
-if reset_markers or st.session_state.get("marker_key") != (course, hole_no):   # new hole: markers start on this green
+if geom["source"] == "estimate":                       # no yard labels on this map: use scales.json, else ask for D and W
+    depth_yd, width_yd = load_scales(course, hole_no)
+    if depth_yd > 0:
+        geom = get_geom(heat_path, depth_yd, width_yd)
+if geom["source"] == "estimate":
+    with scale_box:
+        st.info("This map has no yard labels, so Green Reader can't tell how big the green is. "
+                "Enter the depth (D) and width (W) in yards printed on the map, or save them in a scales.json file "
+                "in the course folder (see the Tutorial tab).")
+        s1, s2 = st.columns(2)
+        depth_yd = float(s1.number_input("Depth, D (yards)", 0.0, 120.0, 0.0, 1.0, key=f"depth_{course}_{hole_no}") or 0.0)
+        width_yd = float(s2.number_input("Width, W (yards)", 0.0, 120.0, 0.0, 1.0, key=f"width_{course}_{hole_no}") or 0.0)
+    if depth_yd > 0:
+        geom = get_geom(heat_path, depth_yd, width_yd)
+if reset_markers or st.session_state.get("marker_key") != (course, hole_no, depth_yd, width_yd):   # new hole or scale: markers restart
     b0, h0 = pe.default_markers(geom)
     st.session_state.ball_coords = {"x_ft": b0[0], "y_ft": b0[1]}
     st.session_state.hole_coords = {"x_ft": h0[0], "y_ft": h0[1]}
-    st.session_state.marker_key = (course, hole_no)
+    st.session_state.marker_key = (course, hole_no, depth_yd, width_yd)
     st.session_state.pop("last_click", None)
 if gps_on:
     with gps_box:
@@ -454,7 +504,7 @@ if gps_on:
 ball = (st.session_state.ball_coords["x_ft"], st.session_state.ball_coords["y_ft"])
 hole = (st.session_state.hole_coords["x_ft"], st.session_state.hole_coords["y_ft"])
 red_high = None if color_scale.startswith("Auto") else color_scale.startswith("Red = high")
-slope_args = (red_high, relief_ft, ignore_edge, use_arrows, arrow_trust, double_boost)
+slope_args = (red_high, relief_ft, ignore_edge, use_arrows, arrow_trust, double_boost, depth_yd, width_yd)
 
 hole_raw = hole
 paced = float(st.session_state.get("paced_len") or 0.0) if gps_on else 0.0
@@ -492,8 +542,8 @@ with map_box:
             key = "hole_coords" if "Hole" in placement_mode else "ball_coords"
             st.session_state[key] = {"x_ft": cx, "y_ft": cy}
         st.rerun()
-    if geom["source"] != "yard labels":
-        st.warning("Couldn't find the yard labels on this map, so the scale is an estimate and distances may be off.")
+    if geom["source"] == "estimate":
+        st.warning("The scale is only an estimate until you enter the depth (and width) above, so distances may be off.")
 
 # the numbers
 with out_box:
@@ -532,8 +582,11 @@ with chart_box:
         plt.close(fig)
 
 with details_box:
-    st.write(f"**Green:** {geom['width_ft'] / 3:.0f} yd wide x {geom['depth_ft'] / 3:.0f} yd deep, scale read from the "
-             f"map's yard labels. Positions are measured from the green's left edge and the map's 0-yard line.")
+    how = {"yard labels": "read from the map's yard labels", "entered": "from the depth and width you entered",
+           "estimate": "estimated (no yard labels)"}.get(geom["source"], "")
+    st.write(f"**Green:** {geom['width_ft'] / 3:.0f} yd wide x {geom['depth_ft'] / 3:.0f} yd deep, scale {how}. "
+             f"Positions are measured from the green's left edge and the map's "
+             f"{'0-yard line' if geom['source'] == 'yard labels' else 'front (bottom) edge'}.")
     st.write(f"**Ball:** {ball[0]:.1f} ft, {ball[1]:.1f} ft   **Hole:** {hole[0]:.1f} ft, {hole[1]:.1f} ft")
     if gps_on:
         cal_ = st.session_state.get("gps_cal")
