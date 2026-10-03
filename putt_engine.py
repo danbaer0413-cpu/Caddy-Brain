@@ -147,6 +147,7 @@ def auto_geom(img_np, depth_yd=None, width_yd=None):
     return dict(x0=float(gx0), y0=float(y0), ppx=ppx, ppy=ppy, xmin_ft=0.0, xmax_ft=(gx1 - gx0) / ppx,
                 ymin_ft=(y0 - gy1) / ppy, ymax_ft=(y0 - gy0) / ppy, width_ft=(gx1 - gx0) / ppx,
                 depth_ft=(gy1 - gy0) / ppy, source=source, px_per_yd=float(ppy * 3.0), labels_read=labels_read,
+                bbox_px=(int(gx0), int(gy0), int(gx1), int(gy1)),
                 front_ft=((front_x - gx0) / ppx, (y0 - gy1) / ppy),
                 back_ft=((back_x - gx0) / ppx, (y0 - gy0) / ppy))
 

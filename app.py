@@ -83,7 +83,26 @@ def load_scales(course_name, hole):
             continue
     return 0.0, 0.0
 
-DISPLAY_WIDTH = 640
+DISPLAY_WIDTH = 640     # heat map width on a computer
+PHONE_WIDTH = 340       # heat map width in phone layout (fits an iPhone in portrait)
+
+
+def looks_like_phone():
+    """True when the browser says it's a phone (needs a recent Streamlit; otherwise False)."""
+    try:
+        ua = (st.context.headers.get("User-Agent") or "").lower()
+    except Exception:
+        return False
+    return any(k in ua for k in ("iphone", "ipod", "android", "mobile"))
+
+
+def crop_box(geom, w, h):
+    """Crop rectangle (pixels) that frames just the green, with room for the markers."""
+    b = geom.get("bbox_px")
+    if not b:
+        return (0, 0, w, h)
+    pad = 22                                  # room for a marker at the edge; small enough to leave out text printed around the green
+    return (max(0, b[0] - pad), max(0, b[1] - pad), min(w, b[2] + pad), min(h, b[3] + pad))
 
 
 # --- 2. HELPERS ---
@@ -146,7 +165,9 @@ def classic_read(img, geom, ball, hole, stimp):
 
 
 def draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows, show_ignored=False, show_detected=False,
-                      extra_marks=None):
+                      extra_marks=None, px_scale=1.0):
+    s = max(1.0, float(px_scale))
+    lw = lambda base: max(base, int(round(base * s)))
     out = img.copy()
     if show_ignored and meta["ignored"].any():     # tint what the slope reader is skipping
         m = np.kron(meta["ignored"], np.ones((meta["step"], meta["step"]), bool))
@@ -169,36 +190,37 @@ def draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows, sho
                 L = min(step * 0.45, mag * 900)
                 ux, uy = vx / mag, vy / mag
                 ex, ey = px + ux * L, py + uy * L
-                d.line([(px, py), (ex, ey)], fill="black", width=2)
-                d.polygon([(ex, ey), (ex - ux * 7 - uy * 4, ey - uy * 7 + ux * 4),
-                           (ex - ux * 7 + uy * 4, ey - uy * 7 - ux * 4)], fill="black")
+                d.line([(px, py), (ex, ey)], fill="black", width=lw(2))
+                d.polygon([(ex, ey), (ex - ux * 7 * s - uy * 4 * s, ey - uy * 7 * s + ux * 4 * s),
+                           (ex - ux * 7 * s + uy * 4 * s, ey - uy * 7 * s - ux * 4 * s)], fill="black")
     if show_detected:   # arrows the app found on the map: orange = single head, magenta = double head
         for ar in meta["arrows"]:
             c, u = np.array(ar["c"]), np.array(ar["u"])
             col = (255, 140, 0) if ar["strength"] < 2 else (200, 0, 200)
-            tail, tip = c - u * 7, c + u * 7
-            d.line([tuple(tail), tuple(tip)], fill=col, width=2)
-            d.ellipse([tip[0] - 3, tip[1] - 3, tip[0] + 3, tip[1] + 3], fill=col)
+            tail, tip = c - u * 7 * s, c + u * 7 * s
+            d.line([tuple(tail), tuple(tip)], fill=col, width=lw(2))
+            d.ellipse([tip[0] - 3 * s, tip[1] - 3 * s, tip[0] + 3 * s, tip[1] + 3 * s], fill=col)
     b, h = pe.ft_to_px(geom, *ball), pe.ft_to_px(geom, *hole)
-    marks = [(b, "blue", 12), (h, "red", 12)]
+    marks = [(b, "blue", 12 * s), (h, "red", 12 * s)]
     if sol is not None:
         a = pe.ft_to_px(geom, *sol["aim_point_ft"])
         curve = [pe.ft_to_px(geom, *p) for p in sol["path_world"][::3]]
-        d.line([b, h], fill="gray", width=3)
+        d.line([b, h], fill="gray", width=lw(3))
         if len(curve) > 1:
-            d.line(curve, fill="#1f6fd1", width=4)
-        d.line([b, a], fill="#1e8e3e", width=3)
-        marks.append((a, "cyan", 8))
+            d.line(curve, fill="#1f6fd1", width=lw(4))
+        d.line([b, a], fill="#1e8e3e", width=lw(3))
+        marks.append((a, "cyan", 8 * s))
     for pt, col, r in marks:
-        d.ellipse([pt[0] - r, pt[1] - r, pt[0] + r, pt[1] + r], fill=col, outline="white", width=2)
+        d.ellipse([pt[0] - r, pt[1] - r, pt[0] + r, pt[1] + r], fill=col, outline="white", width=lw(2))
     for label, (mx, my), col in (extra_marks or []):     # GPS beta: reference spots A/B and your position
         px_, py_ = pe.ft_to_px(geom, mx, my)
-        d.polygon([(px_, py_ - 10), (px_ + 10, py_), (px_, py_ + 10), (px_ - 10, py_)], fill=col, outline="white")
-        d.text((px_ + 13, py_ - 6), label, fill=col)
+        q = 10 * s
+        d.polygon([(px_, py_ - q), (px_ + q, py_), (px_, py_ + q), (px_ - q, py_)], fill=col, outline="white")
+        d.text((px_ + q + 3, py_ - 6), label, fill=col)
     return out
 
 
-def trajectory_chart(sol):
+def trajectory_chart(sol, compact=False):
     """Top-down view: ball at the bottom, hole straight ahead, aim line vs. the true curved path."""
     dist = sol["dist_ft"]
     sign = 1 if sol["aim_side"] == "Left" else -1
@@ -206,7 +228,7 @@ def trajectory_chart(sol):
     px, py = -sol["path_frame"][:, 0], sol["path_frame"][:, 1]
     lim = max(1.0, 1.5 * max(sol["aim_offset_ft"], sol["max_break_ft"]))
 
-    fig, ax = plt.subplots(figsize=(7.5, 6.2))
+    fig, ax = plt.subplots(figsize=(5.0, 6.4) if compact else (7.5, 6.2))
     ax.set_facecolor("#fbfcfb")
     ax.grid(True, color="#d9ded9", linestyle=":", linewidth=0.8)
     ax.axvline(0, color="#9aa59a", linewidth=1, linestyle="--", zorder=1)
@@ -216,16 +238,17 @@ def trajectory_chart(sol):
     ax.plot([aim_x, aim_x], [0, dist], color="black", linewidth=1, linestyle=":", zorder=2)
     ax.plot([aim_x], [dist], "o", color="black", markersize=11, zorder=6)
     ax.annotate(f"Aim ({format_feet_inches(sol['aim_offset_ft'])} {sol['aim_side']})", (aim_x, dist),
-                textcoords="offset points", xytext=(0, 14), ha="center", fontsize=12,
+                textcoords="offset points", xytext=(0, 14), ha="center", fontsize=10 if compact else 12,
                 fontweight="bold", color="#1b365d")
     ax.plot([0], [dist], "o", markerfacecolor="white", markeredgecolor="#c0392b",
             markeredgewidth=3, markersize=14, zorder=5, label="Hole")
     ax.plot([0], [0], "o", color="#1f3a8a", markersize=10, zorder=5, label="Ball")
     ax.set_xlim(-lim, lim)
     ax.set_ylim(-dist * 0.04, dist * 1.12)
-    ax.set_xlabel("Feet left (-) / right (+) of the straight line   (sideways scale exaggerated)")
+    ax.set_xlabel("Feet left / right of the straight line" if compact else
+                  "Feet left (-) / right (+) of the straight line   (sideways scale exaggerated)")
     ax.set_ylabel("Feet toward the hole")
-    ax.legend(loc="lower right", frameon=True, fontsize=9)
+    ax.legend(loc="lower right", frameon=True, fontsize=8 if compact else 9)
     for s in ("top", "right"):
         ax.spines[s].set_visible(False)
     fig.tight_layout()
@@ -316,6 +339,8 @@ def render_tutorial():
             "straight, lower it if they look too curvy.\n"
             "- **Arrow trust and double-arrow boost:** how much the app follows the printed arrows versus the colors.\n"
             "- **Heat map colors:** *Auto* works out whether red is high ground from the arrows. You rarely need to change it.\n"
+            "- **Phone layout:** on a phone the heat map is cropped to the green and sized to fit the screen. It switches on "
+            "by itself on phones, and you can turn it on or off under ③ Fine-tune.\n"
             "- **Scale:** the green's size is read from the yard labels on each map. Maps without yard labels ask you for the "
             "depth (D) and width (W) printed on them.\n"
             "- **Adding a course:** make a folder for it inside `assets/` (for example `assets/pine_valley/`) and put each hole's "
@@ -491,6 +516,9 @@ with tune_box:
                             help="0 = colors only for direction, 1 = follow the arrows wherever they are.")
     double_boost = t2.slider("Double-arrow boost", 0.0, 1.0, 0.3, 0.05,
                              help="Extra steepness where double-head arrows are.")
+    phone = t2.checkbox("📱 Phone layout", value=looks_like_phone(), key="phone_layout",
+                        help="Crops the heat map to the green and sizes it to fit a phone screen. Switched on automatically "
+                             "on phones; turn it off or on here.")
     ref_stimp = t1.slider("My stroke is calibrated for Stimp", 6.0, 13.0, 10.0, 0.5,
                           help="'Hit it like a ... ft putt' is measured on a flat green at this speed. Pick the green speed "
                                "you practice on or feel most comfortable with.")
@@ -572,12 +600,19 @@ sol = None if too_close else get_solution(heat_path, slope_args, ball, hole, sti
 # heat map (tapping it moves the marker chosen above)
 with map_box:
     st.subheader(f"② Heat map: Hole #{hole_no}")
-    shown = draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows, show_ignored, show_detected, marks)
-    clicked = streamlit_image_coordinates(shown, key="map_click", width=DISPLAY_WIDTH)
+    disp_w = PHONE_WIDTH if phone else DISPLAY_WIDTH
+    box = crop_box(geom, img.width, img.height) if phone else (0, 0, img.width, img.height)
+    box_w, box_h = box[2] - box[0], box[3] - box[1]
+    shown = draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows, show_ignored, show_detected, marks,
+                              px_scale=max(1.3, box_w / disp_w) if phone else 1.0)
+    if phone:
+        shown = shown.crop(box)
+    clicked = streamlit_image_coordinates(shown, key="map_click_phone" if phone else "map_click", width=disp_w)
     if clicked and clicked != st.session_state.get("last_click"):
         st.session_state.last_click = clicked
-        scale = img.width / float(DISPLAY_WIDTH)
-        cx, cy = pe.px_to_ft(geom, clicked["x"] * scale, clicked["y"] * scale)
+        sw = clicked.get("width") or disp_w                       # size the browser actually showed
+        sh = clicked.get("height") or sw * box_h / box_w
+        cx, cy = pe.px_to_ft(geom, box[0] + clicked["x"] * box_w / sw, box[1] + clicked["y"] * box_h / sh)
         if "Ref" in placement_mode:
             st.session_state.setdefault("ref_tap", {})[placement_mode[-1]] = (cx, cy)
         else:
@@ -619,7 +654,7 @@ with chart_box:
     if sol is not None:
         st.subheader("⑤ Where to aim and how it breaks")
         st.caption("Green line: aim line. Blue curve: expected roll. Hole at the top, ball at the bottom.")
-        fig = trajectory_chart(sol)
+        fig = trajectory_chart(sol, compact=phone)
         st.pyplot(fig, use_container_width=True)
         plt.close(fig)
 
