@@ -1,1 +1,74 @@
-{"5": {"width_yd": 13.5}}
+{
+ "1": {
+  "depth_yd": 22,
+  "width_yd": 19
+ },
+ "2": {
+  "depth_yd": 21,
+  "width_yd": 21
+ },
+ "3": {
+  "depth_yd": 27,
+  "width_yd": 24
+ },
+ "4": {
+  "depth_yd": 25,
+  "width_yd": 24
+ },
+ "5": {
+  "depth_yd": 18,
+  "width_yd": 17
+ },
+ "6": {
+  "depth_yd": 31,
+  "width_yd": 21
+ },
+ "7": {
+  "depth_yd": 21,
+  "width_yd": 19
+ },
+ "8": {
+  "depth_yd": 36,
+  "width_yd": 24
+ },
+ "9": {
+  "depth_yd": 25,
+  "width_yd": 18
+ },
+ "10": {
+  "depth_yd": 21,
+  "width_yd": 17
+ },
+ "11": {
+  "depth_yd": 28,
+  "width_yd": 28
+ },
+ "12": {
+  "depth_yd": 22,
+  "width_yd": 30
+ },
+ "13": {
+  "depth_yd": 27,
+  "width_yd": 23
+ },
+ "14": {
+  "depth_yd": 19,
+  "width_yd": 23
+ },
+ "15": {
+  "depth_yd": 28,
+  "width_yd": 19
+ },
+ "16": {
+  "depth_yd": 18,
+  "width_yd": 17
+ },
+ "17": {
+  "depth_yd": 27,
+  "width_yd": 11
+ },
+ "18": {
+  "depth_yd": 23,
+  "width_yd": 22
+ }
+}
