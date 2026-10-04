@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body { font-family: -apple-system, system-ui, "Segoe UI", sans-serif; margin: 0; padding: 2px 0; color: #1b365d; }
+  button { font-size: 16px; padding: 10px 14px; border-radius: 8px; border: 1px solid #1f6fd1; background: #1f6fd1; color: #fff; width: 100%; }
+  button:disabled { background: #9db9dd; border-color: #9db9dd; }
+  label { display: block; margin: 8px 2px 2px; font-size: 14px; }
+  #status { margin: 6px 2px 0; font-size: 14px; min-height: 20px; }
+  .good { color: #1e8e3e; } .ok { color: #b26a00; } .bad { color: #c0392b; }
+</style>
+</head>
+<body>
+<button id="go">📡 Get precise location</button>
+<label><input type="checkbox" id="warm"> Keep GPS warm (keeps listening so the next reading is instant; uses more battery)</label>
+<div id="status">Tap the button, then hold still for a few seconds.</div>
+<script>
+(function () {
+  var statusEl = document.getElementById("status"), btn = document.getElementById("go"), warmEl = document.getElementById("warm");
+  var watchId = null, buf = [], active = false, t0 = 0, seconds = 10, counter = 0, lastLive = "";
+
+  function post(type, data) {
+    var m = { isStreamlitMessage: true, type: type };
+    for (var k in (data || {})) m[k] = data[k];
+    window.parent.postMessage(m, "*");
+  }
+  function say(txt, cls) { statusEl.className = cls || ""; statusEl.textContent = txt; }
+  function cls(acc) { return acc <= 5 ? "good" : (acc <= 12 ? "ok" : "bad"); }
+
+  function median(a) { var s = a.slice().sort(function (x, y) { return x - y; }), n = s.length; return n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2; }
+
+  // RAIM-style integrity check, done on positions (a web page can't see individual satellites): readings that disagree with
+  // the consensus of the others are thrown out, then the rest are averaged and graded by how tightly they agree.
+  function assess(list) {
+    var minAcc = Math.min.apply(null, list.map(function (r) { return r.acc; }));
+    var cand = list.filter(function (r) { return r.acc <= Math.max(minAcc * 3, minAcc + 5); });   // 1. drop clearly poor readings
+    var lat0 = median(cand.map(function (r) { return r.lat; })), lon0 = median(cand.map(function (r) { return r.lon; }));
+    var kx = 111320 * Math.cos(lat0 * Math.PI / 180), ky = 110574;
+    var pts = cand.map(function (r) { var x = (r.lon - lon0) * kx, y = (r.lat - lat0) * ky; return { r: r, x: x, y: y, d: Math.sqrt(x * x + y * y) }; });
+    var dm = median(pts.map(function (p) { return p.d; }));
+    var mad = median(pts.map(function (p) { return Math.abs(p.d - dm); }));
+    var sigma = Math.max(1.4826 * mad, 1.0);
+    var limit = Math.max(dm + 3 * sigma, 2.0);
+    var kept = pts.filter(function (p) { return p.d <= limit; });                                  // 2. drop readings that disagree with the rest
+    var sw = 0, mx = 0, my = 0;
+    kept.forEach(function (p) { var a = Math.max(p.r.acc, 1), w = 1 / (a * a); sw += w; mx += w * p.x; my += w * p.y; });
+    mx /= sw; my /= sw;                                                                            // 3. accuracy-weighted average of what is left
+    var ss = 0; kept.forEach(function (p) { ss += (p.x - mx) * (p.x - mx) + (p.y - my) * (p.y - my); });
+    var spread = Math.sqrt(ss / kept.length);
+    var bestAcc = Math.min.apply(null, kept.map(function (p) { return p.r.acc; }));
+    var reported = Math.max(bestAcc, 1.5 * spread);                                                // accuracy never better than the readings' agreement
+    var quality = (kept.length >= 4 && spread <= 2 && reported <= 5) ? "good"
+                : (kept.length >= 3 && spread <= 4 && reported <= 10) ? "fair" : "poor";
+    return { latitude: lat0 + my / ky, longitude: lon0 + mx / kx, accuracy: reported, readings: kept.length, total: list.length,
+             spread: spread, quality: quality };
+  }
+
+  function finish(list) {
+    active = false;
+    if (!list.length) { say("No readings yet. Make sure Location is allowed for this browser.", "bad"); btn.disabled = false; return; }
+    var r = assess(list);
+    r.id = ++counter;
+    post("streamlit:setComponentValue", { value: r, dataType: "json" });
+    var q = r.quality === "good" ? "Integrity good" : r.quality === "fair" ? "Integrity fair" : "Integrity poor, take another reading";
+    say(q + ": " + r.readings + " of " + r.total + " readings agree (within " + r.spread.toFixed(1) + " m). Accurate to about " +
+        r.accuracy.toFixed(1) + " m (" + Math.round(r.accuracy * 3.281) + " ft).", r.quality === "good" ? "good" : r.quality === "fair" ? "ok" : "bad");
+    btn.disabled = false;
+    if (!warmEl.checked) stopWatch();
+  }
+
+  function onPos(p) {
+    var c = p.coords, now = Date.now();
+    buf.push({ lat: c.latitude, lon: c.longitude, acc: c.accuracy, t: now });
+    buf = buf.filter(function (r) { return now - r.t < 30000; });
+    if (!active) { if (warmEl.checked) say("GPS warm: currently about " + c.accuracy.toFixed(1) + " m.", cls(c.accuracy)); return; }
+    var mine = buf.filter(function (r) { return r.t >= t0; });
+    var bestAcc = Math.min.apply(null, mine.map(function (r) { return r.acc; }));
+    say("Listening... best so far " + bestAcc.toFixed(1) + " m (" + mine.length + " readings)", cls(bestAcc));
+    if (now - t0 >= seconds * 1000 || settled(mine)) finish(mine);
+  }
+
+  function settled(mine) {
+    // stop early once the last few readings agree with each other and are accurate
+    if (mine.length < 5) return false;
+    var last = mine.slice(-4), mx = Infinity, Mx = -Infinity, my = Infinity, My = -Infinity, ky = 110574, kx = 111320 * Math.cos(last[0].lat * Math.PI / 180);
+    last.forEach(function (r) { var x = r.lon * kx, y = r.lat * ky; mx = Math.min(mx, x); Mx = Math.max(Mx, x); my = Math.min(my, y); My = Math.max(My, y); });
+    var best = Math.min.apply(null, last.map(function (r) { return r.acc; }));
+    return Math.max(Mx - mx, My - my) <= 1.5 && best <= 4;
+  }
+
+  function onErr(e) {
+    active = false; btn.disabled = false; stopWatch();
+    var msg = e && e.code === 1 ? "Location is blocked. On iPhone: Settings > Privacy & Security > Location Services > Safari Websites, set While Using and turn Precise Location on."
+            : e && e.code === 3 ? "Timed out waiting for a GPS fix. Try again in the open."
+            : "Couldn't get a location (" + (e && e.message ? e.message : "unknown error") + ").";
+    say(msg, "bad");
+  }
+
+  function startWatch() {
+    if (watchId !== null) return;
+    if (!navigator.geolocation) { say("This browser has no location support.", "bad"); return; }
+    watchId = navigator.geolocation.watchPosition(onPos, onErr, { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 });
+  }
+  function stopWatch() { if (watchId !== null && navigator.geolocation) { navigator.geolocation.clearWatch(watchId); } watchId = null; }
+
+  btn.addEventListener("click", function () {
+    btn.disabled = true; t0 = Date.now();
+    var recent = buf.filter(function (r) { return t0 - r.t < 8000; });
+    if (watchId !== null && warmEl.checked && recent.length >= 3) { finish(recent); return; }   // warm: answer from the live buffer
+    active = true; buf = []; say("Listening...", ""); startWatch();
+  });
+  warmEl.addEventListener("change", function () {
+    if (warmEl.checked) startWatch(); else if (!active) stopWatch();
+  });
+
+  window.addEventListener("message", function (ev) {
+    if (ev.data && ev.data.type === "streamlit:render" && ev.data.args && ev.data.args.seconds) seconds = ev.data.args.seconds;
+  });
+  post("streamlit:componentReady", { apiVersion: 1 });
+  post("streamlit:setFrameHeight", { height: 150 });
+
+  // test hook (used by the Node tests, harmless in a browser)
+  window.__gpsTest = { onPos: onPos, assess: assess, click: function () { btn.click(); } };
+})();
+</script>
+</body>
+</html>
