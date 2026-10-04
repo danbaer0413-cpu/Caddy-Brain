@@ -5,7 +5,7 @@ Coordinates are feet. x = left to right across the green, y = front to back (up 
 """
 import numpy as np
 
-ENGINE_VERSION = "2026-10-04-h"   # app.py checks this so a stale copy of this file is caught
+ENGINE_VERSION = "2026-10-04-i"   # app.py checks this so a stale copy of this file is caught
 G = 32.17          # ft/s^2
 ROLL = 5.0 / 7.0   # solid sphere rolling: slope accel = (5/7) * g * slope
 CUP_IN = 4.25      # cup diameter, inches
@@ -366,8 +366,10 @@ def detect_arrows(img_np, inside):
         arrows.append({"c": c, "u": u * sign, "n": n, "length": length, "weight": min(1.0, asym / 0.2)})
     if arrows:
         med = np.median([x["n"] for x in arrows])
+        mb = float(np.median([x["n"] / max(x["length"], 1.0) for x in arrows]))
         for x in arrows:
             x["strength"] = 2.0 if x["n"] > 1.2 * med else 1.0
+            x["bold"] = float(np.clip((x["n"] / max(x["length"], 1.0)) / max(mb, 1e-6), 0.4, 2.5))
     return arrows, _grow(core_all, 1)
 
 
@@ -402,19 +404,21 @@ def _block_mean(a, valid, step):
     return (a * v).sum((1, 3)) / np.maximum(cnt, 1), cnt
 
 
-def _arrow_field(arrows, shape, step, sigma):
-    """Smooth vector field from sparse arrows: (vx, vy, confidence, mean strength) per coarse cell."""
+def _arrow_field(arrows, shape, step, sigma, bold_exp=0.0):
+    """Smooth vector field from sparse arrows: (vx, vy, confidence, mean strength, mean boldness) per coarse cell.
+    bold_exp > 0 lets bolder arrows count for more in the direction (weight = boldness ** bold_exp)."""
     H, W = shape
     X, Y = np.meshgrid((np.arange(W) + 0.5) * step, (np.arange(H) + 0.5) * step)
-    vx, vy, conf, st = (np.zeros((H, W)) for _ in range(4))
+    vx, vy, conf, st, bd = (np.zeros((H, W)) for _ in range(5))
     for a in arrows:
         w = np.exp(-((X - a["c"][0]) ** 2 + (Y - a["c"][1]) ** 2) / (2 * sigma ** 2)) * a.get("weight", 1.0)
-        vx += w * a["u"][0]; vy += w * a["u"][1]; conf += w; st += w * a["strength"]
-    return vx, vy, conf, st / np.maximum(conf, 1e-9)
+        wd = w * a.get("bold", 1.0) ** bold_exp
+        vx += wd * a["u"][0]; vy += wd * a["u"][1]; conf += w; st += w * a["strength"]; bd += w * a.get("bold", 1.0)
+    return vx, vy, conf, st / np.maximum(conf, 1e-9), bd / np.maximum(conf, 1e-9)
 
 
 def build_slope_field(img_np, geom, red_is_high=None, relief_ft=1.0, step=4, ignore_outline=True,
-                      use_arrows=True, arrow_trust=0.7, double_boost=0.3, max_grade=None, p90_target=None):
+                      use_arrows=True, arrow_trust=0.7, double_boost=0.3, max_grade=None, p90_target=None, bold_weight=0.0):
     """Return (sx, sy, meta): slope (ft rise per ft) on a coarse grid.
 
     Colors give the slope size; the printed arrows give the direction (and double heads add steepness).
@@ -479,7 +483,8 @@ def build_slope_field(img_np, geom, red_is_high=None, relief_ft=1.0, step=4, ign
     mag = np.hypot(dcx, dcy)
 
     if use_arrows and arrows:
-        vx, vy, conf, mean_st = _arrow_field(arrows, h.shape, step, sigma=25.0 * max(1.0, max(img_np.shape[:2]) / 480.0))
+        vx, vy, conf, mean_st, mean_bold = _arrow_field(arrows, h.shape, step, sigma=25.0 * max(1.0, max(img_np.shape[:2]) / 480.0),
+                                                        bold_exp=2.0 * bold_weight)
         dax, day = vx / ppx, -vy / ppy                    # arrow downhill, feet space
         dn = np.maximum(np.hypot(dax, day), 1e-9)
         dax, day = dax / dn, day / dn
@@ -489,6 +494,8 @@ def build_slope_field(img_np, geom, red_is_high=None, relief_ft=1.0, step=4, ign
         bn = np.hypot(bx, by)
         bx, by = np.where(bn > 1e-6, bx / np.maximum(bn, 1e-9), cdx), np.where(bn > 1e-6, by / np.maximum(bn, 1e-9), cdy)
         boost = 1 + double_boost * (mean_st - 1) * np.clip(conf, 0, 1)
+        if bold_weight:                                   # bolder arrows = steeper: scale the slope by the local boldness
+            boost = boost * np.clip(1 + 0.6 * bold_weight * (mean_bold - 1) * np.clip(conf, 0, 1), 0.6, 1.8)
         sx, sy = -mag * boost * bx, -mag * boost * by
         meta["used_arrows"] = True
     else:

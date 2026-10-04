@@ -23,7 +23,7 @@ st.set_page_config(page_title="CaddyBrain Green Reader", page_icon="⛳", layout
 # the three code files must be the same release; a stale copy of putt_engine.py or gps_mode.py gives confusing errors
 import inspect
 import importlib
-REQUIRED_ENGINE = "2026-10-04-h"
+REQUIRED_ENGINE = "2026-10-04-i"
 
 
 def _engine_ok():
@@ -113,6 +113,50 @@ def looks_like_phone():
     return any(k in ua for k in ("iphone", "ipod", "android", "mobile"))
 
 
+def _font(px):
+    try:
+        from PIL import ImageFont
+        return ImageFont.load_default(size=max(8, int(round(px))))
+    except Exception:
+        from PIL import ImageFont
+        return ImageFont.load_default()
+
+
+def _yd_text(v):
+    return f"{v:.1f}".rstrip("0").rstrip(".")
+
+
+def add_pace_rulers(shown, geom, box, ds, pad_l_disp=46, pad_t_disp=24):
+    """Put the picture on a larger canvas with a ruler down the left side (yards from the front edge of the green) and one
+    across the top (yards from its left edge), marked at each quarter. Returns (canvas, pad_left_px, pad_top_px)."""
+    if not geom.get("bbox_px"):
+        return shown, 0, 0
+    pl, pt = int(round(pad_l_disp * ds)), int(round(pad_t_disp * ds))
+    canvas = Image.new("RGB", (shown.width + pl, shown.height + pt), "white")
+    canvas.paste(shown, (pl, pt))
+    d = ImageDraw.Draw(canvas)
+    f = _font(11 * ds)
+    ink = (27, 54, 93)
+    gx0, gy0, gx1, gy1 = geom["bbox_px"]
+    depth_yd = (geom["ymax_ft"] - geom["ymin_ft"]) / 3.0
+    width_yd = (geom["xmax_ft"] - geom["xmin_ft"]) / 3.0
+    tick = 5 * ds
+    for k in range(5):
+        yy = gy1 - k * (gy1 - gy0) / 4.0 - box[1] + pt
+        xx = gx0 + k * (gx1 - gx0) / 4.0 - box[0] + pl
+        ly = f"{_yd_text(k * depth_yd / 4)}" + (" yd" if k == 4 else "")
+        lx = f"{_yd_text(k * width_yd / 4)}" + (" yd" if k == 4 else "")
+        xl = gx0 - box[0] + pl
+        yt = gy0 - box[1] + pt
+        d.line([(xl - tick, yy), (xl, yy)], fill=ink, width=max(1, int(round(1.3 * ds))))
+        d.line([(xx, yt - tick), (xx, yt)], fill=ink, width=max(1, int(round(1.3 * ds))))
+        tw = d.textlength(ly, font=f)
+        d.text((max(1, xl - tick - 3 * ds - tw), yy - 6 * ds), ly, fill=ink, font=f)
+        tw = d.textlength(lx, font=f)
+        d.text((min(canvas.width - tw - 1, max(1, xx - tw / 2)), max(1, yt - tick - 15 * ds)), lx, fill=ink, font=f)
+    return canvas, pl, pt
+
+
 def crop_box(geom, w, h):
     """Crop rectangle (pixels) that frames just the green, with room for the markers."""
     b = geom.get("bbox_px")
@@ -149,12 +193,12 @@ def get_geom(path, depth_yd=0.0, width_yd=0.0):
 
 
 @st.cache_data
-def get_slope(path, red_is_high, relief_ft, ignore_edge, use_arrows, arrow_trust, double_boost, max_grade, p90_target, depth_yd=0.0, width_yd=0.0):
+def get_slope(path, red_is_high, relief_ft, ignore_edge, use_arrows, arrow_trust, double_boost, max_grade, p90_target, bold_weight, depth_yd=0.0, width_yd=0.0):
     img = load_heat_map(path)
     geom = get_geom(path, depth_yd, width_yd)
     sx, sy, meta = pe.build_slope_field(np.array(img), geom, red_is_high, relief_ft, ignore_outline=ignore_edge,
                                         use_arrows=use_arrows, arrow_trust=arrow_trust, double_boost=double_boost,
-                                        max_grade=max_grade, p90_target=p90_target)
+                                        max_grade=max_grade, p90_target=p90_target, bold_weight=bold_weight)
     return sx, sy, meta
 
 
@@ -183,7 +227,7 @@ def classic_read(img, geom, ball, hole, stimp):
 
 
 def draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows, show_ignored=False, show_detected=False,
-                      extra_marks=None, px_scale=1.0, dot_px=7):
+                      extra_marks=None, px_scale=1.0, dot_px=7, pace_grid=False):
     ds = float(px_scale)                   # image pixels per on-screen pixel
     s = max(1.0, ds)
     lw = lambda base: max(base, int(round(base * s)))
@@ -219,6 +263,25 @@ def draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows, sho
             tail, tip = c - u * 7 * s, c + u * 7 * s
             d.line([tuple(tail), tuple(tip)], fill=col, width=lw(2))
             d.ellipse([tip[0] - 3 * s, tip[1] - 3 * s, tip[0] + 3 * s, tip[1] + 3 * s], fill=col)
+    if pace_grid and geom.get("bbox_px"):
+        gx0, gy0, gx1, gy1 = geom["bbox_px"]
+        grid = Image.new("RGBA", out.size, (0, 0, 0, 0))
+        gd = ImageDraw.Draw(grid)
+        col = (27, 54, 93, 150)
+        dash, gap = 7 * ds, 5 * ds
+        for k in range(1, 4):                                   # quarter lines (the green's edges need no line)
+            yy = gy1 - k * (gy1 - gy0) / 4.0
+            xx = gx0 + k * (gx1 - gx0) / 4.0
+            t = gx0
+            while t < gx1:
+                gd.line([(t, yy), (min(t + dash, gx1), yy)], fill=col, width=max(1, int(round(1.2 * ds))))
+                t += dash + gap
+            t = gy0
+            while t < gy1:
+                gd.line([(xx, t), (xx, min(t + dash, gy1))], fill=col, width=max(1, int(round(1.2 * ds))))
+                t += dash + gap
+        out = Image.alpha_composite(out.convert("RGBA"), grid).convert("RGB")
+        d = ImageDraw.Draw(out)
     b, h = pe.ft_to_px(geom, *ball), pe.ft_to_px(geom, *hole)
     r_dot = max(2.5, dot_px * ds)          # marker radius as it appears on screen
     marks = [(b, "blue", r_dot), (h, "red", r_dot)]
@@ -279,15 +342,18 @@ def trajectory_chart(sol, compact=False):
 
 # --- 3. TUTORIAL TAB ---
 @st.cache_data
+@st.cache_data(show_spinner=False)
 def tutorial_example():
-    """A sample read on the first hole that has a heat map, so the tutorial can show the real thing."""
+    """A sample read on a hole whose map has yard labels, so the tutorial can show the real thing.
+    Cached, and only the first two holes of each course are looked at (a course either has yard labels or it doesn't):
+    scanning every map on every tap used to cost many seconds."""
     try:
         for course_name, holes in COURSES.items():
-            for hole, p in sorted(holes.items()):
-                if p and pe.auto_geom(np.array(load_heat_map(p))) is not None and get_geom(p)["source"] == "yard labels":
+            for hole, p in sorted(holes.items())[:2]:
+                if p and get_geom(p)["source"] == "yard labels":
                     img_, g_ = load_heat_map(p), get_geom(p)
                     b_, h_ = pe.default_markers(g_)
-                    args = (None, 1.0, True, True, 0.7, 0.3, None, None, 0.0, 0.0)
+                    args = (None, 1.0, True, True, 0.7, 0.3, None, None, 0.5, 0.0, 0.0)
                     sx_, sy_, m_ = get_slope(p, *args)
                     sol_ = get_solution(p, args, b_, h_, 10.0, 1.5, 0.5, 0.04)
                     return draw_heat_overlay(img_, g_, b_, h_, sol_, sx_, sy_, m_, False), hole
@@ -320,7 +386,9 @@ def render_tutorial():
         "**① Set up the putt:** pick the course and hole, set the **Stimp** (green speed), and choose whether your "
         "next tap places the 🔴 hole or the 🔵 ball.\n\n"
         "**② Heat map:** tap it to place the ball or hole. Tap again to move it. "
-        "**Reset markers** puts both back on the green.\n\n"
+        "**Reset markers** puts both back on the green. The dashed lines mark quarter-way across and back, with the yards from the "
+        "front edge down the left side and from the left edge across the top, so you can pace it off. Under the map, **Place by "
+        "pacing** lets you type the yards instead of tapping.\n\n"
         "**③ Fine-tune the read:** optional settings under the map. You can leave these alone.\n\n"
         "**④ Your numbers:** aim point, putt length, and how hard to hit it.\n\n"
         "**⑤ Trajectory chart:** the aim line next to the curved roll, with the hole at the top and the ball at the bottom.")
@@ -363,6 +431,8 @@ def render_tutorial():
             "- **Green relief:** how much the ground rises between the blue and red areas. Raise it if reads look too "
             "straight, lower it if they look too curvy.\n"
             "- **Arrow trust and double-arrow boost:** how much the app follows the printed arrows versus the colors.\n"
+            "- **Arrow boldness weight:** on maps where some arrows are drawn bolder than others, bolder arrows count for more "
+            "(they set the local direction and make the slope steeper). 0 turns it off.\n"
             "- **Short-putt break and slope ceiling:** these calm the break on putts of 3 ft or less, fading out by 6 ft. "
             "Short putts are hit firmer, and real greens are rarely steeper than a few percent. Long putts are never "
             "affected. Raise either if short reads look too straight.\n"
@@ -554,6 +624,7 @@ with tab_app:                                          # one page, top to bottom
     top = st.container()                               # course, hole, stimp, marker mode
     scale_box = st.container()                         # only used for maps with no yard labels
     map_box = st.container()                           # heat map
+    pace_box = st.expander("📏 Place by pacing (yards)")   # type paced yards instead of tapping
     gps_box = st.container()                           # GPS mode (beta), only filled when the switch is on
     tune_box = st.expander("③ ⚙️ Fine-tune the read")  # advanced controls, right under the map
     out_box = st.container()                           # aim point, putt length, how hard to hit it
@@ -598,6 +669,12 @@ with tune_box:
                              help="Off by default. Some maps use the full red-to-blue range in a narrow band, which reads as slopes "
                                   "steeper than any real green. Turning this on scales those maps down so 90% of the green is no "
                                   "steeper than about 3.5%. It changes long putts too. Gentle maps (like Mercer Oaks) are not changed.")
+    bold_pct = t2.slider("Arrow boldness weight (%)", 0, 100, 50, 10,
+                         help="Bolder arrows count for more: they pull the local direction toward themselves and make the slope "
+                              "steeper where they sit. 0 = every arrow counts the same. Only maps whose arrows vary in weight are affected.")
+    show_pace = t1.checkbox("Pace marks (yards)", value=True,
+                            help="Quarter-way marks along the left side and across the top, in yards from the front and from the "
+                                 "left edge of the green, so you can pace off the ball and hole and match them to the map.")
     dot_size = t1.slider("Ball / hole dot size", 3, 12, 6, 1,
                          help="Radius of the ball and hole dots in screen pixels. Smaller dots make it easier to see exactly "
                               "where you tapped. The tiny center dot marks the exact spot.")
@@ -662,7 +739,7 @@ ball = (st.session_state.ball_coords["x_ft"], st.session_state.ball_coords["y_ft
 hole = (st.session_state.hole_coords["x_ft"], st.session_state.hole_coords["y_ft"])
 red_high = None if color_scale.startswith("Auto") else color_scale.startswith("Red = high")
 slope_args = (red_high, relief_ft, ignore_edge, use_arrows, arrow_trust, double_boost, None, 0.035 if auto_steep else None,
-              depth_yd, width_yd)
+              bold_pct / 100.0, depth_yd, width_yd)
 
 hole_raw = hole
 paced = float(st.session_state.get("paced_len") or 0.0) if gps_on else 0.0
@@ -691,16 +768,25 @@ with map_box:
     disp_w = PHONE_WIDTH if phone else DISPLAY_WIDTH
     box = crop_box(geom, img.width, img.height) if phone else (0, 0, img.width, img.height)
     box_w, box_h = box[2] - box[0], box[3] - box[1]
+    rulers = bool(show_pace and geom.get("bbox_px"))
+    pad_l_disp = 46
+    ds = box_w / (disp_w - pad_l_disp) if rulers else box_w / disp_w            # image pixels per on-screen pixel
     shown = draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows, show_ignored, show_detected, marks,
-                              px_scale=box_w / disp_w, dot_px=dot_size)
-    if phone:
-        shown = shown.crop(box)
+                              px_scale=ds, dot_px=dot_size, pace_grid=rulers)
+    shown = shown.crop(box)
+    pad_l = pad_t = 0
+    if rulers:
+        shown, pad_l, pad_t = add_pace_rulers(shown, geom, box, ds, pad_l_disp)
+    comp_w, comp_h = shown.size
+    if max(comp_w, comp_h) > 2 * max(disp_w, 400):                               # keep what is sent to the phone light
+        k_ = 2 * max(disp_w, 400) / max(comp_w, comp_h)
+        shown = shown.resize((max(1, int(comp_w * k_)), max(1, int(comp_h * k_))), Image.LANCZOS)
     clicked = streamlit_image_coordinates(shown, key="map_click_phone" if phone else "map_click", width=disp_w)
     if clicked and clicked != st.session_state.get("last_click"):
         st.session_state.last_click = clicked
         sw = clicked.get("width") or disp_w                       # size the browser actually showed
-        sh = clicked.get("height") or sw * box_h / box_w
-        cx, cy = pe.px_to_ft(geom, box[0] + clicked["x"] * box_w / sw, box[1] + clicked["y"] * box_h / sh)
+        sh = clicked.get("height") or sw * comp_h / comp_w
+        cx, cy = pe.px_to_ft(geom, box[0] + clicked["x"] * comp_w / sw - pad_l, box[1] + clicked["y"] * comp_h / sh - pad_t)
         if "Ref" in placement_mode:
             st.session_state.setdefault("ref_tap", {})[placement_mode[-1]] = (cx, cy)
         else:
@@ -708,9 +794,37 @@ with map_box:
             st.session_state[key] = {"x_ft": cx, "y_ft": cy}
             st.session_state.setdefault("marker_src", {})[key] = {"src": "tap"}
         st.rerun()
+    if rulers:
+        st.caption("Pace marks: the dashed lines are quarter-way across and quarter-way back. Numbers down the left side are yards "
+                   "from the front edge of the green; numbers across the top are yards from its left edge. One big step is about a yard.")
     if geom["source"] == "estimate":
         st.warning("The scale is only an estimate until you enter the width or depth above, so putt lengths here may be well off. "
                    "Don't trust distances on this hole until you do.")
+
+# where the markers sit, in yards, and a way to type paced distances
+with pace_box:
+    d_yd = (geom["ymax_ft"] - geom["ymin_ft"]) / 3.0
+    w_yd = (geom["xmax_ft"] - geom["xmin_ft"]) / 3.0
+    from_left = lambda p: (p[0] - geom["xmin_ft"]) / 3.0
+    from_front = lambda p: (p[1] - geom["ymin_ft"]) / 3.0
+    bl, bf, hl, hf = from_left(ball), from_front(ball), from_left(hole_raw), from_front(hole_raw)
+    st.write(f"**Now:** ball {bf:.1f} yd from the front and {bl:.1f} yd from the left edge. "
+             f"Hole {hf:.1f} yd from the front and {hl:.1f} yd from the left edge. "
+             f"(The green is about {w_yd:.0f} yd wide and {d_yd:.0f} yd deep.)")
+    st.caption("Walk it off: about one big step per yard. Count from the front edge of the green and from its left edge, "
+               "type the numbers, and press Place. This matches the numbered marks on the map.")
+    kk = f"{course}_{hole_no}_{bf:.1f}_{bl:.1f}_{hf:.1f}_{hl:.1f}"
+    p1, p2 = st.columns(2)
+    nb_f = p1.number_input("Ball: yards from front", 0.0, float(d_yd), float(np.clip(bf, 0, d_yd)), 0.5, key="pb_f_" + kk)
+    nb_l = p2.number_input("Ball: yards from left edge", 0.0, float(w_yd), float(np.clip(bl, 0, w_yd)), 0.5, key="pb_l_" + kk)
+    nh_f = p1.number_input("Hole: yards from front", 0.0, float(d_yd), float(np.clip(hf, 0, d_yd)), 0.5, key="ph_f_" + kk)
+    nh_l = p2.number_input("Hole: yards from left edge", 0.0, float(w_yd), float(np.clip(hl, 0, w_yd)), 0.5, key="ph_l_" + kk)
+    if st.button("Place ball and hole", key="pace_place_" + kk):
+        st.session_state.ball_coords = {"x_ft": geom["xmin_ft"] + nb_l * 3.0, "y_ft": geom["ymin_ft"] + nb_f * 3.0}
+        st.session_state.hole_coords = {"x_ft": geom["xmin_ft"] + nh_l * 3.0, "y_ft": geom["ymin_ft"] + nh_f * 3.0}
+        st.session_state.setdefault("marker_src", {}).update({"ball_coords": {"src": "paced"}, "hole_coords": {"src": "paced"}})
+        st.session_state.pop("last_click", None)
+        st.rerun()
 
 # the numbers
 with out_box:
