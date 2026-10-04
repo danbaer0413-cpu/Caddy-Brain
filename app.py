@@ -23,7 +23,9 @@ st.set_page_config(page_title="CaddyBrain Green Reader", page_icon="⛳", layout
 # the three code files must be the same release; a stale copy of putt_engine.py or gps_mode.py gives confusing errors
 import inspect
 _needs = []
-if not hasattr(pe, "auto_geom") or "depth_yd" not in inspect.signature(pe.auto_geom).parameters:
+REQUIRED_ENGINE = "2026-10-04-h"
+if (not hasattr(pe, "auto_geom") or "depth_yd" not in inspect.signature(pe.auto_geom).parameters
+        or getattr(pe, "ENGINE_VERSION", "") != REQUIRED_ENGINE):
     _needs.append("putt_engine.py")
 if not hasattr(gm, "calibrate"):
     _needs.append("gps_mode.py")
@@ -43,8 +45,9 @@ if _needs:
              "Upload the latest version of each file into the same folder as app.py, then reboot the app.")
     st.code(f"putt_engine.py loaded from: {_where} ({_lines} lines)\n"
             f"auto_geom{_sig}\n"
+            f"putt_engine version: {getattr(pe, 'ENGINE_VERSION', 'old (no version tag)')}\n"
             f"files next to app.py: {_near}\n\n"
-            "expected: putt_engine.py, 623 lines, auto_geom(img_np, depth_yd=None, width_yd=None)")
+            f"expected: putt_engine.py with version {REQUIRED_ENGINE}")
     st.stop()
 
 def discover_courses(root="assets"):
@@ -132,18 +135,19 @@ def get_geom(path, depth_yd=0.0, width_yd=0.0):
 
 
 @st.cache_data
-def get_slope(path, red_is_high, relief_ft, ignore_edge, use_arrows, arrow_trust, double_boost, depth_yd=0.0, width_yd=0.0):
+def get_slope(path, red_is_high, relief_ft, ignore_edge, use_arrows, arrow_trust, double_boost, max_grade, p90_target, depth_yd=0.0, width_yd=0.0):
     img = load_heat_map(path)
     geom = get_geom(path, depth_yd, width_yd)
     sx, sy, meta = pe.build_slope_field(np.array(img), geom, red_is_high, relief_ft, ignore_outline=ignore_edge,
-                                        use_arrows=use_arrows, arrow_trust=arrow_trust, double_boost=double_boost)
+                                        use_arrows=use_arrows, arrow_trust=arrow_trust, double_boost=double_boost,
+                                        max_grade=max_grade, p90_target=p90_target)
     return sx, sy, meta
 
 
 @st.cache_data
-def get_solution(path, slope_args, ball, hole, stimp, past_ft):
+def get_solution(path, slope_args, ball, hole, stimp, past_ft, short_break=1.0, short_cap=None):
     sx, sy, meta = get_slope(path, *slope_args)
-    return pe.solve_putt(ball, hole, sx, sy, meta, stimp, past_ft)
+    return pe.solve_putt(ball, hole, sx, sy, meta, stimp, past_ft, short_break, short_cap)
 
 
 def classic_read(img, geom, ball, hole, stimp):
@@ -165,8 +169,9 @@ def classic_read(img, geom, ball, hole, stimp):
 
 
 def draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows, show_ignored=False, show_detected=False,
-                      extra_marks=None, px_scale=1.0):
-    s = max(1.0, float(px_scale))
+                      extra_marks=None, px_scale=1.0, dot_px=7):
+    ds = float(px_scale)                   # image pixels per on-screen pixel
+    s = max(1.0, ds)
     lw = lambda base: max(base, int(round(base * s)))
     out = img.copy()
     if show_ignored and meta["ignored"].any():     # tint what the slope reader is skipping
@@ -201,7 +206,8 @@ def draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows, sho
             d.line([tuple(tail), tuple(tip)], fill=col, width=lw(2))
             d.ellipse([tip[0] - 3 * s, tip[1] - 3 * s, tip[0] + 3 * s, tip[1] + 3 * s], fill=col)
     b, h = pe.ft_to_px(geom, *ball), pe.ft_to_px(geom, *hole)
-    marks = [(b, "blue", 12 * s), (h, "red", 12 * s)]
+    r_dot = max(2.5, dot_px * ds)          # marker radius as it appears on screen
+    marks = [(b, "blue", r_dot), (h, "red", r_dot)]
     if sol is not None:
         a = pe.ft_to_px(geom, *sol["aim_point_ft"])
         curve = [pe.ft_to_px(geom, *p) for p in sol["path_world"][::3]]
@@ -209,12 +215,14 @@ def draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows, sho
         if len(curve) > 1:
             d.line(curve, fill="#1f6fd1", width=lw(4))
         d.line([b, a], fill="#1e8e3e", width=lw(3))
-        marks.append((a, "cyan", 8 * s))
+        marks.append((a, "cyan", 0.7 * r_dot))
     for pt, col, r in marks:
-        d.ellipse([pt[0] - r, pt[1] - r, pt[0] + r, pt[1] + r], fill=col, outline="white", width=lw(2))
+        d.ellipse([pt[0] - r, pt[1] - r, pt[0] + r, pt[1] + r], fill=col, outline="white", width=max(1, int(round(1.5 * ds))))
+        c_ = max(0.8, 0.16 * r)           # tiny center dot: the exact spot that was tapped
+        d.ellipse([pt[0] - c_, pt[1] - c_, pt[0] + c_, pt[1] + c_], fill="black" if col == "cyan" else "white")
     for label, (mx, my), col in (extra_marks or []):     # GPS beta: reference spots A/B and your position
         px_, py_ = pe.ft_to_px(geom, mx, my)
-        q = 10 * s
+        q = 8 * s
         d.polygon([(px_, py_ - q), (px_ + q, py_), (px_, py_ + q), (px_ - q, py_)], fill=col, outline="white")
         d.text((px_ + q + 3, py_ - 6), label, fill=col)
     return out
@@ -265,9 +273,9 @@ def tutorial_example():
                 if p and pe.auto_geom(np.array(load_heat_map(p))) is not None and get_geom(p)["source"] == "yard labels":
                     img_, g_ = load_heat_map(p), get_geom(p)
                     b_, h_ = pe.default_markers(g_)
-                    args = (None, 1.0, True, True, 0.7, 0.3, 0.0, 0.0)
+                    args = (None, 1.0, True, True, 0.7, 0.3, None, None, 0.0, 0.0)
                     sx_, sy_, m_ = get_slope(p, *args)
-                    sol_ = get_solution(p, args, b_, h_, 10.0, 1.5)
+                    sol_ = get_solution(p, args, b_, h_, 10.0, 1.5, 0.5, 0.04)
                     return draw_heat_overlay(img_, g_, b_, h_, sol_, sx_, sy_, m_, False), hole
     except Exception:
         pass
@@ -331,13 +339,21 @@ def render_tutorial():
         "2. Walk to a second spot far from the first, like the back of the green, and do the same with **Ref B**.\n"
         "3. Stand over the ball, press the location button, then **Set ball here**. Repeat at the hole.\n\n"
         "Phone GPS is only good to a few yards, so treat the placement as a starting point: tap the map to fine-tune, "
-        "or type the paced putt length. Switch GPS mode off if anything acts up.")
+        "or type the paced putt length. The reader asks for the phone's best GPS fix, listens for up to 10 seconds, and shows "
+        "its accuracy (green is 5 m or better). It also checks that the readings agree with each other and throws out "
+        "outliers. **Keep GPS warm** keeps it locked during the round. Switch GPS mode off if "
+        "anything acts up.")
 
     with st.expander("Other settings and questions"):
         st.markdown(
             "- **Green relief:** how much the ground rises between the blue and red areas. Raise it if reads look too "
             "straight, lower it if they look too curvy.\n"
             "- **Arrow trust and double-arrow boost:** how much the app follows the printed arrows versus the colors.\n"
+            "- **Short-putt break and slope ceiling:** these calm the break on putts of 3 ft or less, fading out by 6 ft. "
+            "Short putts are hit firmer, and real greens are rarely steeper than a few percent. Long putts are never "
+            "affected. Raise either if short reads look too straight.\n"
+            "- **Auto-calibrate steepness:** off by default. It scales down maps that read steeper than any real green "
+            "(the Hopewell maps do), and it changes long putts too.\n"
             "- **Heat map colors:** *Auto* works out whether red is high ground from the arrows. You rarely need to change it.\n"
             "- **Phone layout:** on a phone the heat map is cropped to the green and sized to fit the screen. It switches on "
             "by itself on phones, and you can turn it on or off under ③ Fine-tune.\n"
@@ -362,23 +378,48 @@ def render_gps_panel(geom):
     st.caption("Phone GPS is only good to a few yards, so use it to place the ball and hole roughly, then tap the map to "
                "fine-tune or type the paced putt length. Turn the GPS switch off to go back to normal.")
 
-    # current location: the phone button (needs the streamlit-geolocation add-on) or typed test coordinates
-    raw = None
-    try:
-        from streamlit_geolocation import streamlit_geolocation
-        raw = streamlit_geolocation()
-    except ImportError:
-        st.info("The phone-location add-on isn't installed. Add `streamlit-geolocation` to requirements.txt, "
-                "or test with typed coordinates below.")
-    except Exception as e:
-        st.warning(f"Couldn't read the phone's location ({e}). You can still test with typed coordinates below.")
+    # current location: the precise reader (asks the phone for its best GPS fix and averages the good readings),
+    # or the basic button from the streamlit-geolocation add-on, or typed test coordinates
+    raw, precise = None, False
+    use_basic = st.checkbox("Use the basic location button instead", value=False, key="gps_basic",
+                            help="Fallback in case the precise reader doesn't work on your phone.")
+    if not use_basic:
+        try:
+            import gps_reader
+            if gps_reader.available():
+                raw = gps_reader.precise_location(seconds=10, key="precise_gps")
+                precise = True
+        except Exception as e:
+            st.warning(f"The precise reader couldn't start ({e}). Using the basic button instead.")
+    if not precise:
+        try:
+            from streamlit_geolocation import streamlit_geolocation
+            raw = streamlit_geolocation()
+        except ImportError:
+            st.info("The phone-location add-on isn't installed. Add `streamlit-geolocation` to requirements.txt, "
+                    "or test with typed coordinates below.")
+        except Exception as e:
+            st.warning(f"Couldn't read the phone's location ({e}). You can still test with typed coordinates below.")
+    with st.expander("Getting better GPS accuracy"):
+        st.markdown(
+            "- **Allow precise location.** iPhone: Settings > Privacy & Security > Location Services > your browser "
+            "(for example Safari Websites) > While Using the App, with Precise Location on.\n"
+            "- **Hold still with the browser in front** while it listens. The precise reader listens for up to 10 seconds "
+            "and averages the best readings.\n"
+            "- **Tick Keep GPS warm** at the start of the round so the GPS stays locked and each reading is instant "
+            "(uses more battery).\n"
+            "- **Open a GPS app first.** A GPS app that has been running (a maps or flight app) keeps the phone's GPS locked "
+            "on satellites, and the browser then gets that better fix. Open it, wait a few seconds, then come back here.\n"
+            "- **Sky view matters.** Trees, buildings and a phone in a pocket all make GPS worse.")
     if isinstance(raw, dict):
         coords = raw["coords"] if isinstance(raw.get("coords"), dict) else raw
         lat, lon, acc = coords.get("latitude"), coords.get("longitude"), coords.get("accuracy")
         if lat is not None and lon is not None and raw != ss.get("gps_last_raw"):
             ss.gps_last_raw = raw
             ss.gps_fix_n = ss.get("gps_fix_n", 0) + 1
-            ss.gps_fix = {"lat": float(lat), "lon": float(lon), "acc": acc, "src": "phone", "id": ss.gps_fix_n}
+            ss.gps_fix = {"lat": float(lat), "lon": float(lon), "acc": acc, "src": "phone", "id": ss.gps_fix_n,
+                          "readings": coords.get("readings"), "total": coords.get("total"), "spread": coords.get("spread"),
+                          "quality": coords.get("quality")}
     with st.expander("Test without a phone: type coordinates"):
         la = st.number_input("Latitude", value=0.0, format="%.7f", key="typed_lat")
         lo = st.number_input("Longitude", value=0.0, format="%.7f", key="typed_lon")
@@ -387,8 +428,19 @@ def render_gps_panel(geom):
             ss.gps_fix = {"lat": la, "lon": lo, "acc": None, "src": "typed", "id": ss.gps_fix_n}
     fix = ss.get("gps_fix")
     if fix:
-        acc_txt = f", accurate to about ±{fix['acc']:.0f} m ({fix['acc'] * 3.28:.0f} ft)" if fix.get("acc") else ""
-        st.success(f"Your location: {fix['lat']:.6f}, {fix['lon']:.6f}{acc_txt}")
+        acc = fix.get("acc")
+        acc_txt = f", accurate to about ±{acc:.0f} m ({acc * 3.28:.0f} ft)" if acc else ""
+        n_txt = ""
+        if fix.get("readings"):
+            n_txt = f", {fix['readings']} of {fix['total']} readings agree" if fix.get("total") else f", from {fix['readings']} readings"
+            if fix.get("spread") is not None:
+                n_txt += f" (within {fix['spread']:.1f} m)"
+        q = fix.get("quality")
+        q_txt = {"good": "Integrity good. ", "fair": "Integrity fair. ", "poor": "Integrity poor, take another reading. "}.get(q, "")
+        msg = f"{q_txt}Your location: {fix['lat']:.6f}, {fix['lon']:.6f}{acc_txt}{n_txt}"
+        bad = q == "poor" or (acc and acc > 12)
+        ok_ = (q in (None, "good")) and (not acc or acc <= 5)
+        (st.error if bad else st.success if ok_ else st.warning)(msg)
     else:
         st.info("No location yet. Press the location button above (allow location access in your browser).")
 
@@ -399,6 +451,11 @@ def render_gps_panel(geom):
             return None
         if f["id"] == ss.get("gps_used_id"):
             st.warning("That's the same location reading as last time. If you've moved, press the location button again.")
+        if f.get("quality") == "poor":
+            st.warning("The readings in this fix didn't agree with each other (integrity poor). Take another reading first.")
+        elif f.get("acc") and f["acc"] > 8:
+            st.warning(f"This reading is only accurate to about ±{f['acc']:.0f} m ({f['acc'] * 3.28:.0f} ft). "
+                       "Take another reading for a better position, or tap the map to fine-tune afterwards.")
         ss.gps_used_id = f["id"]
         return f
 
@@ -460,6 +517,7 @@ def render_gps_panel(geom):
                 cx = float(np.clip(x, geom["xmin_ft"], geom["xmax_ft"]))
                 cy = float(np.clip(y, geom["ymin_ft"], geom["ymax_ft"]))
                 ss[key] = {"x_ft": cx, "y_ft": cy}
+                ss.setdefault("marker_src", {})[key] = {"src": "gps", "acc": f.get("acc")}
                 off = float(np.hypot(x - cx, y - cy))
                 what = "Ball" if "ball" in key else "Hole"
                 if off > 3:
@@ -519,6 +577,19 @@ with tune_box:
     phone = t2.checkbox("📱 Phone layout", value=looks_like_phone(), key="phone_layout",
                         help="Crops the heat map to the green and sizes it to fit a phone screen. Switched on automatically "
                              "on phones; turn it off or on here.")
+    max_grade_pct = t2.slider("Short-putt slope ceiling (%)", 2.0, 8.0, 4.0, 0.5,
+                              help="On putts of 3 ft or less (fading out by 6 ft) the app won't believe a slope steeper than this. "
+                                   "Real greens rarely get steeper than a few percent. Long putts are not affected.")
+    auto_steep = t2.checkbox("Auto-calibrate steepness (all putts)", value=False,
+                             help="Off by default. Some maps use the full red-to-blue range in a narrow band, which reads as slopes "
+                                  "steeper than any real green. Turning this on scales those maps down so 90% of the green is no "
+                                  "steeper than about 3.5%. It changes long putts too. Gentle maps (like Mercer Oaks) are not changed.")
+    dot_size = t1.slider("Ball / hole dot size", 3, 12, 6, 1,
+                         help="Radius of the ball and hole dots in screen pixels. Smaller dots make it easier to see exactly "
+                              "where you tapped. The tiny center dot marks the exact spot.")
+    short_pct = t1.slider("Short-putt break (inside 6 ft)", 0, 100, 50, 5,
+                          help="How much of the sideways break to keep on putts of 3 ft or less, easing back to 100% at 6 ft. "
+                               "Short putts are hit firmer than the pace the app assumes, so they break less. 100% = no change.")
     ref_stimp = t1.slider("My stroke is calibrated for Stimp", 6.0, 13.0, 10.0, 0.5,
                           help="'Hit it like a ... ft putt' is measured on a flat green at this speed. Pick the green speed "
                                "you practice on or feel most comfortable with.")
@@ -550,23 +621,25 @@ except Exception as e:
     st.stop()
 if geom["source"] == "estimate":                       # no yard labels on this map: use scales.json, else ask for D and W
     depth_yd, width_yd = load_scales(course, hole_no)
-    if depth_yd > 0:
+    if depth_yd > 0 or width_yd > 0:
         geom = get_geom(heat_path, depth_yd, width_yd)
 if geom["source"] == "estimate":
     with scale_box:
-        st.info("This map has no yard labels, so Green Reader can't tell how big the green is. "
-                "Enter the depth (D) and width (W) in yards printed on the map, or save them in a scales.json file "
-                "in the course folder (see the Tutorial tab).")
+        st.info("This map has no readable yard labels, so Green Reader can't tell how big the green is, and distances are only "
+                "a guess until you tell it. Enter the green's width or depth in yards (either one is enough). "
+                "To save the numbers for good, put them in a scales.json file in the course folder "
+                "(see the Tutorial tab).")
         s1, s2 = st.columns(2)
-        depth_yd = float(s1.number_input("Depth, D (yards)", 0.0, 120.0, 0.0, 1.0, key=f"depth_{course}_{hole_no}") or 0.0)
-        width_yd = float(s2.number_input("Width, W (yards)", 0.0, 120.0, 0.0, 1.0, key=f"width_{course}_{hole_no}") or 0.0)
-    if depth_yd > 0:
+        depth_yd = float(s1.number_input("Depth, D (yards)", 0.0, 120.0, 0.0, 0.5, key=f"depth_{course}_{hole_no}") or 0.0)
+        width_yd = float(s2.number_input("Width, W (yards)", 0.0, 120.0, 0.0, 0.5, key=f"width_{course}_{hole_no}") or 0.0)
+    if depth_yd > 0 or width_yd > 0:
         geom = get_geom(heat_path, depth_yd, width_yd)
 if reset_markers or st.session_state.get("marker_key") != (course, hole_no, depth_yd, width_yd):   # new hole or scale: markers restart
     b0, h0 = pe.default_markers(geom)
     st.session_state.ball_coords = {"x_ft": b0[0], "y_ft": b0[1]}
     st.session_state.hole_coords = {"x_ft": h0[0], "y_ft": h0[1]}
     st.session_state.marker_key = (course, hole_no, depth_yd, width_yd)
+    st.session_state.marker_src = {}
     st.session_state.pop("last_click", None)
 if gps_on:
     with gps_box:
@@ -574,7 +647,8 @@ if gps_on:
 ball = (st.session_state.ball_coords["x_ft"], st.session_state.ball_coords["y_ft"])
 hole = (st.session_state.hole_coords["x_ft"], st.session_state.hole_coords["y_ft"])
 red_high = None if color_scale.startswith("Auto") else color_scale.startswith("Red = high")
-slope_args = (red_high, relief_ft, ignore_edge, use_arrows, arrow_trust, double_boost, depth_yd, width_yd)
+slope_args = (red_high, relief_ft, ignore_edge, use_arrows, arrow_trust, double_boost, None, 0.035 if auto_steep else None,
+              depth_yd, width_yd)
 
 hole_raw = hole
 paced = float(st.session_state.get("paced_len") or 0.0) if gps_on else 0.0
@@ -595,7 +669,7 @@ if gps_on:
 
 too_close = np.hypot(hole[0] - ball[0], hole[1] - ball[1]) < 1.0
 sx, sy, meta = get_slope(heat_path, *slope_args)
-sol = None if too_close else get_solution(heat_path, slope_args, ball, hole, stimp, past_ft)
+sol = None if too_close else get_solution(heat_path, slope_args, ball, hole, stimp, past_ft, short_pct / 100.0, max_grade_pct / 100.0)
 
 # heat map (tapping it moves the marker chosen above)
 with map_box:
@@ -604,7 +678,7 @@ with map_box:
     box = crop_box(geom, img.width, img.height) if phone else (0, 0, img.width, img.height)
     box_w, box_h = box[2] - box[0], box[3] - box[1]
     shown = draw_heat_overlay(img, geom, ball, hole, sol, sx, sy, meta, show_arrows, show_ignored, show_detected, marks,
-                              px_scale=max(1.3, box_w / disp_w) if phone else 1.0)
+                              px_scale=box_w / disp_w, dot_px=dot_size)
     if phone:
         shown = shown.crop(box)
     clicked = streamlit_image_coordinates(shown, key="map_click_phone" if phone else "map_click", width=disp_w)
@@ -618,9 +692,11 @@ with map_box:
         else:
             key = "hole_coords" if "Hole" in placement_mode else "ball_coords"
             st.session_state[key] = {"x_ft": cx, "y_ft": cy}
+            st.session_state.setdefault("marker_src", {})[key] = {"src": "tap"}
         st.rerun()
     if geom["source"] == "estimate":
-        st.warning("The scale is only an estimate until you enter the depth (and width) above, so distances may be off.")
+        st.warning("The scale is only an estimate until you enter the width or depth above, so putt lengths here may be well off. "
+                   "Don't trust distances on this hole until you do.")
 
 # the numbers
 with out_box:
@@ -645,6 +721,15 @@ with out_box:
         st.caption(f"{severity} break ({factor:.2f}x), "
                    f"{'right-to-left' if sol['aim_side'] == 'Right' else 'left-to-right'}, playing {play}. "
                    f"'Hit it like' is how far this stroke would roll a ball on a flat Stimp {ref_stimp:g} green.{speed_note}")
+        msrc = st.session_state.get("marker_src", {})
+        if gps_on and paced < 1.0 and all(msrc.get(k, {}).get("src") == "gps" for k in ("ball_coords", "hole_coords")):
+            accs = [msrc[k].get("acc") for k in ("ball_coords", "hole_coords")]
+            if all(accs):
+                unc_ft = float(np.hypot(*accs)) * 3.28
+                if sol["dist_ft"] < 2.5 * unc_ft:
+                    st.warning(f"The ball and hole were both placed by GPS, which is only good to about ±{unc_ft:.0f} ft between "
+                               f"the two, so this {sol['dist_ft']:.0f} ft putt length (and the direction) may be off by that much. "
+                               "For short putts, tap the hole on the map or type the paced length under the GPS controls.")
         if not sol["reached"] or abs(sol["hit_error_ft"]) > 0.15:
             st.warning("The solver could not make this putt drop with the current settings. "
                        "Try lowering Green relief or checking the color setting.")

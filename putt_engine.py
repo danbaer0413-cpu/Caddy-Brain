@@ -5,6 +5,7 @@ Coordinates are feet. x = left to right across the green, y = front to back (up 
 """
 import numpy as np
 
+ENGINE_VERSION = "2026-10-04-h"   # app.py checks this so a stale copy of this file is caught
 G = 32.17          # ft/s^2
 ROLL = 5.0 / 7.0   # solid sphere rolling: slope accel = (5/7) * g * slope
 CUP_IN = 4.25      # cup diameter, inches
@@ -93,6 +94,38 @@ def _read_label_values(img_np, rows):
     return vals
 
 
+def _read_scale_labels(img_np):
+    """Find the yard labels (28, 21, 14, 7, 0, -5 ...) down the side of the map and read them as numbers.
+
+    Works at a standard width, so resized screenshots read the same. Returns (label rows in the image's own pixels, values)
+    only if the rows are evenly spaced and the numbers form an even scale ending at 0; otherwise None. Strict on purpose:
+    bunker hatching and other texture in the margins can look like text, and a wrong scale is worse than asking.
+    """
+    try:
+        from PIL import Image
+        h, w = img_np.shape[:2]
+        f = 472.0 / w
+        if abs(f - 1) < 0.03:
+            f, a = 1.0, img_np
+        else:
+            a = np.array(Image.fromarray(img_np).resize((472, max(1, int(round(h * f)))), Image.LANCZOS))
+        rows = _label_rows(a)
+        if len(rows) < 5:
+            return None
+        vals = _read_label_values(a, rows[:-1])              # top .. 0 (the -5 label uses a smaller font)
+        if not vals:
+            return None
+        m = len(vals)
+        if not (vals[-1] == 0 and vals[0] > 0 and all(abs(v - vals[0] * (m - 1 - k) / (m - 1)) <= 0.6 for k, v in enumerate(vals))):
+            return None
+        sp = np.diff(np.array(rows[:-1], float))
+        if sp.min() <= 0 or sp.max() > 1.08 * sp.min():
+            return None
+        return [r / f for r in rows], vals
+    except Exception:
+        return None
+
+
 def auto_geom(img_np, depth_yd=None, width_yd=None):
     """Work out the scale from the map itself, so no per-hole width or depth is needed.
 
@@ -100,44 +133,28 @@ def auto_geom(img_np, depth_yd=None, width_yd=None):
     the 0 line, which fixes pixels per yard (refined by rounding the top label to whole yards).
     x = 0 is the left edge of the green, y = 0 is the map's 0-yard line.
 
-    Maps with no yard labels (some print "D 29 yd / W 19 yd" instead) can be given depth_yd and width_yd by hand;
-    the green's outline then spans exactly that, and y = 0 is the front (bottom) of the green.
+    Maps with no readable yard labels (some print "D 29 yd / W 19 yd" instead) can be given depth_yd and/or width_yd by
+    hand (either one is enough); the green's outline then spans exactly that, and y = 0 is the front (bottom) of the green.
     """
     inside, _ = inside_mask(img_np)
     ys, xs = np.nonzero(inside)
     if len(xs) == 0 or inside.all():
         return None
     gx0, gx1, gy0, gy1 = xs.min(), xs.max(), ys.min(), ys.max()
-    try:
-        labels = _label_rows(img_np)
-    except Exception:
-        labels = []
-    source = "yard labels"
+    lab = _read_scale_labels(img_np)
     labels_read = False
-    ppx = ppy = None
-    if len(labels) >= 5:
-        top, y0, ym5 = labels[0], labels[-2], labels[-1]
-        ppy0 = (ym5 - y0) / 5.0                                  # px per yard from the -5 label (rough: smaller font)
-        try:
-            vals = _read_label_values(img_np, labels[:-1])       # the top..0 labels, read as numbers
-        except Exception:
-            vals = None
-        n_yd = None
-        if vals:
-            m = len(vals)
-            if vals[-1] == 0 and vals[0] > 0 and all(abs(v - vals[0] * (m - 1 - k) / (m - 1)) <= 0.6 for k, v in enumerate(vals)):
-                n_yd, labels_read = vals[0], True                # labels agree with an evenly spaced scale: trust them
-        if n_yd is None:
-            n_yd = max(1, round((y0 - top) / ppy0))              # fallback: round to whole yards
-        ppy_yd = (y0 - top) / n_yd
-        if abs(ppy_yd / ppy0 - 1) > 0.15:
-            ppy_yd = ppy0
-        ppx = ppy = ppy_yd / 3.0
-    elif depth_yd:
+    source = "yard labels"
+    if lab:
+        rows, vals = lab
+        top, y0 = rows[0], rows[-2]
+        ppx = ppy = (y0 - top) / vals[0] / 3.0
+        labels_read = True
+    elif depth_yd or width_yd:                                   # typed in: depth, width, or both (one is enough)
         source = "entered"
         y0 = float(gy1)
-        ppy = (gy1 - gy0) / (depth_yd * 3.0)
-        ppx = (gx1 - gx0) / (width_yd * 3.0) if width_yd else ppy
+        ppy = (gy1 - gy0) / (depth_yd * 3.0) if depth_yd else None
+        ppx = (gx1 - gx0) / (width_yd * 3.0) if width_yd else None
+        ppx, ppy = ppx or ppy, ppy or ppx                        # with only one, assume square pixels
     else:
         source = "estimate"
         y0 = float(gy1)
@@ -209,19 +226,25 @@ def _outside_region(line):
         out = n
 
 
-def _color_region(img_np, k=3):
-    """The putting surface found by color: the biggest blob of saturated heat color, with holes (arrows, dashed lines,
-    a pale-green middle band) filled in. Used when the outline can't be traced."""
+def _color_region(img_np, k=3, heat_sat=0.22, close=1):
+    """The putting surface found by color: the biggest connected blob of heat color plus the dark ink around and inside it
+    (outline, arrows, dashed lines), closed over small gaps, with everything it encloses filled in. Including the dark
+    outline keeps a pale middle band in the heat colors from splitting the green in two. Used when the outline can't be
+    traced on its own."""
     h, w, _ = img_np.shape
     rgb = img_np[:h // k * k, :w // k * k].astype(float) / 255.0
-    sat = (rgb.max(-1) - rgb.min(-1)) / np.maximum(rgb.max(-1), 1e-6)
-    colorful = (sat > 0.22).reshape(h // k, k, w // k, k).mean((1, 3)) > 0.5
+    mx, mn = rgb.max(-1), rgb.min(-1)
+    sat = (mx - mn) / np.maximum(mx, 1e-6)
+    heat = (sat > heat_sat).reshape(h // k, k, w // k, k).mean((1, 3)) > 0.5
+    ink = (mx < 0.55).reshape(h // k, k, w // k, k).mean((1, 3)) > 0.15   # thin dark lines only half-fill a cell
+    colorful = heat | ink
     comps = _label(colorful)
     if not comps:
         return None
     blob = np.zeros(colorful.shape, bool)
     best = max(comps, key=len)
     blob[best[:, 1].astype(int), best[:, 0].astype(int)] = True
+    blob = ~_grow(~_grow(blob, close), close)            # close small gaps in the outline
     region = ~_outside_region(blob)                      # everything the blob encloses, holes included
     region = np.kron(region, np.ones((k, k), bool))
     return np.pad(region, ((0, h - region.shape[0]), (0, w - region.shape[1])), mode="edge")
@@ -240,7 +263,10 @@ def inside_mask(img_np):
     outside = np.kron(_grow(outside_c, 1), np.ones((k, k), bool))   # then take back the extra ring we added
     outside = np.pad(outside, ((0, h - outside.shape[0]), (0, w - outside.shape[1])), mode="edge")
     inside = ~outside & ~line
-    if inside.mean() < 0.08:                      # outline isn't closed; don't trust the flood fill
+    if inside.mean() < 0.08:                      # outline isn't closed (the flood fill leaked): trace the green by color instead
+        reg = _color_region(img_np, heat_sat=0.12, close=2)      # tolerant settings: a pale middle band must not split the green
+        if reg is not None and 0.05 < reg.mean() < 0.9:
+            return reg, line
         return ~line, line
     ic = inside[:h // k * k, :w // k * k].reshape(h // k, k, w // k, k).min((1, 3))
     rgb = img_np[:h // k * k, :w // k * k].astype(float) / 255.0
@@ -388,7 +414,7 @@ def _arrow_field(arrows, shape, step, sigma):
 
 
 def build_slope_field(img_np, geom, red_is_high=None, relief_ft=1.0, step=4, ignore_outline=True,
-                      use_arrows=True, arrow_trust=0.7, double_boost=0.3):
+                      use_arrows=True, arrow_trust=0.7, double_boost=0.3, max_grade=None, p90_target=None):
     """Return (sx, sy, meta): slope (ft rise per ft) on a coarse grid.
 
     Colors give the slope size; the printed arrows give the direction (and double heads add steepness).
@@ -468,6 +494,23 @@ def build_slope_field(img_np, geom, red_is_high=None, relief_ft=1.0, step=4, ign
     else:
         sx, sy = cx_, cy_
 
+    meta["relief_scale"] = 1.0
+    if p90_target:
+        # Some maps spread the full red-to-blue range across a narrow band, which reads as slopes far steeper than any real
+        # green (a steep 90th percentile). Scale such maps down so that 90% of the green is no steeper than p90_target.
+        # Maps that are already gentle are left alone (this only ever reduces).
+        mag0 = np.hypot(sx, sy)[~ignored]
+        if mag0.size:
+            p90 = float(np.percentile(mag0, 90))
+            if p90 > p90_target:
+                meta["relief_scale"] = p90_target / p90
+                sx, sy = sx * meta["relief_scale"], sy * meta["relief_scale"]
+    if max_grade:
+        # soft limit on steepness (rise per run, so 0.04 = 4%): smooth below the limit, never above it. Fast-changing colors
+        # (a narrow band between red and blue) would otherwise read as slopes no real green has.
+        mag_ = np.hypot(sx, sy)
+        k_ = 1.0 / (1.0 + (mag_ / max_grade) ** 4) ** 0.25
+        sx, sy = sx * k_, sy * k_
     meta.update({"field": np.stack([sx, sy], axis=-1), **geom})
     return sx, sy, meta
 
@@ -557,13 +600,40 @@ def _speed_for_pace(ball, heading, dist, fwd, left, sx, sy, meta, stimp, past_ft
     return 0.5 * (lo + hi)
 
 
-def solve_putt(ball, hole, sx, sy, meta, stimp, past_ft=1.5):
+def _smooth(t):
+    t = float(np.clip(t, 0.0, 1.0))
+    return t * t * (3 - 2 * t)
+
+
+def short_putt_weight(dist_ft, short_ft=3.0, full_at_ft=6.0):
+    """1.0 for putts of `short_ft` or less, easing to 0.0 at `full_at_ft` and beyond (long putts are never touched)."""
+    return 1.0 - _smooth((dist_ft - short_ft) / max(full_at_ft - short_ft, 1e-6))
+
+
+def short_putt_factor(dist_ft, at_short=1.0, short_ft=3.0, full_at_ft=6.0):
+    """How much of the sideways slope to keep: `at_short` for putts of `short_ft` or less, easing smoothly up to 1.0
+    (no change) at `full_at_ft` and beyond."""
+    w = short_putt_weight(dist_ft, short_ft, full_at_ft)
+    return at_short * w + (1.0 - w)
+
+
+def solve_putt(ball, hole, sx, sy, meta, stimp, past_ft=1.5, short_break=1.0, short_cap=None):
     """Find the aim angle + speed that brings the ball to the hole, stopping ~past_ft beyond.
 
     Returns dict with aim_offset_ft (+ = left of hole), aim_side, path_frame (lateral, forward),
     aim_frame, max_break_ft, launch_speed, hit_error_ft.
     """
     dist, fwd, left = _frame(ball, hole)
+    w_ = short_putt_weight(dist, 6.0, 8.0)           # slope ceiling: full strength through 6 ft, gone by 8 ft
+    if short_cap and w_ > 0.001:                     # only ever bites on slopes steeper than a real green has
+        fld = meta["field"]
+        k_ = 1.0 / (1.0 + (np.hypot(fld[..., 0], fld[..., 1]) / short_cap) ** 4) ** 0.25
+        meta = dict(meta, field=(1.0 - w_) * fld + w_ * fld * k_[..., None])
+    g_ = short_putt_factor(dist, short_break)
+    if g_ < 0.999:                                   # tighten the break on short putts: shrink only the cross-slope
+        fld = meta["field"]
+        cross = fld @ left
+        meta = dict(meta, field=fld - (1.0 - g_) * cross[..., None] * left)
 
     def run(theta):
         c, s = np.cos(theta), np.sin(theta)
@@ -608,7 +678,7 @@ def solve_putt(ball, hole, sx, sy, meta, stimp, past_ft=1.5):
         "aim_side": "Left" if aim_off > 0 else "Right",
         "path_frame": pf, "straight_frame": straight_f,
         "max_break_ft": float(np.abs(pf[:, 0]).max()),
-        "launch_speed": v, "hit_error_ft": err, "reached": reached,
+        "launch_speed": v, "hit_error_ft": err, "reached": reached, "short_factor": g_,
     }
 
 
