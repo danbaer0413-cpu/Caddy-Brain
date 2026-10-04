@@ -23,7 +23,7 @@ st.set_page_config(page_title="CaddyBrain Green Reader", page_icon="⛳", layout
 # the three code files must be the same release; a stale copy of putt_engine.py or gps_mode.py gives confusing errors
 import inspect
 import importlib
-REQUIRED_ENGINE = "2026-10-04-i"
+REQUIRED_ENGINE = "2026-10-04-j"
 
 
 def _engine_ok():
@@ -203,9 +203,9 @@ def get_slope(path, red_is_high, relief_ft, ignore_edge, use_arrows, arrow_trust
 
 
 @st.cache_data
-def get_solution(path, slope_args, ball, hole, stimp, past_ft, short_break=1.0, short_cap=None):
+def get_solution(path, slope_args, ball, hole, stimp, past_ft, short_break=1.0, short_cap=None, break_scale=1.0):
     sx, sy, meta = get_slope(path, *slope_args)
-    return pe.solve_putt(ball, hole, sx, sy, meta, stimp, past_ft, short_break, short_cap)
+    return pe.solve_putt(ball, hole, sx, sy, meta, stimp, past_ft, short_break, short_cap, break_scale)
 
 
 def classic_read(img, geom, ball, hole, stimp):
@@ -389,7 +389,8 @@ def render_tutorial():
         "**Reset markers** puts both back on the green. The dashed lines mark quarter-way across and back, with the yards from the "
         "front edge down the left side and from the left edge across the top, so you can pace it off. Under the map, **Place by "
         "pacing** lets you type the yards instead of tapping.\n\n"
-        "**③ Fine-tune the read:** optional settings under the map. You can leave these alone.\n\n"
+        "**③ Fine-tune the read:** two settings that really change the read: **Break amount** (more or less break than the map "
+        "shows) and **Calm steep maps**. The rest is display options. You can leave all of it alone.\n\n"
         "**④ Your numbers:** aim point, putt length, and how hard to hit it.\n\n"
         "**⑤ Trajectory chart:** the aim line next to the curved roll, with the hole at the top and the ball at the bottom.")
 
@@ -433,11 +434,13 @@ def render_tutorial():
             "- **Arrow trust and double-arrow boost:** how much the app follows the printed arrows versus the colors.\n"
             "- **Arrow boldness weight:** on maps where some arrows are drawn bolder than others, bolder arrows count for more "
             "(they set the local direction and make the slope steeper). 0 turns it off.\n"
-            "- **Short-putt break and slope ceiling:** these calm the break on putts of 3 ft or less, fading out by 6 ft. "
-            "Short putts are hit firmer, and real greens are rarely steeper than a few percent. Long putts are never "
-            "affected. Raise either if short reads look too straight.\n"
-            "- **Auto-calibrate steepness:** off by default. It scales down maps that read steeper than any real green "
-            "(the Hopewell maps do), and it changes long putts too.\n"
+            "- **Break amount:** scales how much the ball breaks. 100% is what the map shows. If the real green breaks more than the "
+            "app says, raise it; if less, lower it. Unlike the old sliders, this one always moves the read: 150% is half again as "
+            "much break, 50% is half as much.\n"
+            "- **Calm steep maps:** on by default. Some heat maps use their whole red-to-blue range on a gentle green, which reads "
+            "steeper than any real green. This scales those maps down. Gentle maps are not changed.\n"
+            "- **Advanced:** tick *Show advanced settings* for the heat map color direction, how much to trust the printed arrows, "
+            "how far past the hole the ball should finish, and the Stimp your stroke is calibrated for. Everything has a good default.\n"
             "- **Heat map colors:** *Auto* works out whether red is high ground from the arrows. You rarely need to change it.\n"
             "- **Phone layout:** on a phone the heat map is cropped to the green and sized to fit the screen. It switches on "
             "by itself on phones, and you can turn it on or off under ③ Fine-tune.\n"
@@ -651,51 +654,41 @@ with top:
 
 with tune_box:
     t1, t2 = st.columns(2)
-    color_scale = t1.selectbox("Heat map colors", ["Auto (from arrows)", "Red = high ground", "Red = low ground (flip)"])
-    relief_ft = t2.slider("Green relief (ft)", 0.3, 4.0, 1.0, 0.1,
-                          help="Elevation difference between the coolest and warmest color. "
-                               "Raise it if reads look too straight, lower it if they look too curvy.")
-    arrow_trust = t1.slider("Arrow trust", 0.0, 1.0, 0.7, 0.05,
-                            help="0 = colors only for direction, 1 = follow the arrows wherever they are.")
-    double_boost = t2.slider("Double-arrow boost", 0.0, 1.0, 0.3, 0.05,
-                             help="Extra steepness where double-head arrows are.")
-    phone = t2.checkbox("📱 Phone layout", value=looks_like_phone(), key="phone_layout",
-                        help="Crops the heat map to the green and sizes it to fit a phone screen. Switched on automatically "
-                             "on phones; turn it off or on here.")
-    max_grade_pct = t2.slider("Short-putt slope ceiling (%)", 2.0, 8.0, 4.0, 0.5,
-                              help="On putts of 3 ft or less (fading out by 6 ft) the app won't believe a slope steeper than this. "
-                                   "Real greens rarely get steeper than a few percent. Long putts are not affected.")
-    auto_steep = t2.checkbox("Auto-calibrate steepness (all putts)", value=False,
-                             help="Off by default. Some maps use the full red-to-blue range in a narrow band, which reads as slopes "
-                                  "steeper than any real green. Turning this on scales those maps down so 90% of the green is no "
-                                  "steeper than about 3.5%. It changes long putts too. Gentle maps (like Mercer Oaks) are not changed.")
-    bold_pct = t2.slider("Arrow boldness weight (%)", 0, 100, 50, 10,
-                         help="Bolder arrows count for more: they pull the local direction toward themselves and make the slope "
-                              "steeper where they sit. 0 = every arrow counts the same. Only maps whose arrows vary in weight are affected.")
-    show_pace = t1.checkbox("Pace marks (yards)", value=True,
-                            help="Quarter-way marks along the left side and across the top, in yards from the front and from the "
-                                 "left edge of the green, so you can pace off the ball and hole and match them to the map.")
-    dot_size = t1.slider("Ball / hole dot size", 3, 12, 6, 1,
-                         help="Radius of the ball and hole dots in screen pixels. Smaller dots make it easier to see exactly "
-                              "where you tapped. The tiny center dot marks the exact spot.")
-    short_pct = t1.slider("Short-putt break (inside 6 ft)", 0, 100, 50, 5,
-                          help="How much of the sideways break to keep on putts of 3 ft or less, easing back to 100% at 6 ft. "
-                               "Short putts are hit firmer than the pace the app assumes, so they break less. 100% = no change.")
-    ref_stimp = t1.slider("My stroke is calibrated for Stimp", 6.0, 13.0, 10.0, 0.5,
-                          help="'Hit it like a ... ft putt' is measured on a flat green at this speed. Pick the green speed "
-                               "you practice on or feel most comfortable with.")
-    past_ft = t1.slider("Miss-past pace (ft)", 0.5, 3.0, 1.5, 0.25,
-                        help="How far past the hole the ball would stop. Slower pace = more break.")
-    use_arrows = t2.checkbox("Use the arrows printed on the map", value=True,
-                             help="Arrows set the break direction; double-head arrows make the slope steeper.")
-    ignore_edge = t2.checkbox("Ignore green boundary line", value=True,
-                              help="Skips the solid green outline (and everything outside it) so the edge of the map "
-                                   "isn't read as a slope.")
-    st.caption("Map overlays")
-    o1, o2, o3 = st.columns(3)
-    show_arrows = o1.checkbox("Computed slope arrows", value=True)
-    show_detected = o2.checkbox("Detected arrows", value=False, help="Orange = single head, purple = double head.")
-    show_ignored = o3.checkbox("Ignored edge pixels", value=False, help="Tinted magenta.")
+    break_pct = t1.slider("Break amount (%)", 50, 200, 100, 10,
+                          help="How much the ball breaks. 100% is the break the map shows. If the real green breaks more than the "
+                               "app says, raise it. If it breaks less, lower it. Everything scales together, so 150% is half again "
+                               "as much break and 50% is half as much.")
+    calm = t2.checkbox("Calm steep maps", value=True,
+                       help="Some heat maps use their whole red-to-blue range on a gentle green, which reads as a slope steeper than "
+                            "any real green. This scales those maps down to a believable steepness (and caps any slope over 4%). "
+                            "Maps that are already gentle, like your older Mercer Oaks East maps, are not changed.")
+    st.caption("Display (these do not change the read)")
+    d1, d2, d3 = st.columns(3)
+    phone = d1.checkbox("📱 Phone layout", value=looks_like_phone(), key="phone_layout",
+                        help="Crops the heat map to the green and sizes it to fit a phone screen. Switched on automatically on phones.")
+    show_pace = d2.checkbox("Pace marks", value=True,
+                            help="Quarter-way marks in yards along the left side and across the top, so you can pace off the ball and hole.")
+    show_arrows = d3.checkbox("Slope arrows", value=True, help="The arrows the app computes, drawn over the map.")
+    dot_size = st.slider("Ball / hole dot size", 3, 12, 6, 1,
+                         help="Smaller dots make it easier to see exactly where you tapped.")
+    show_adv = st.checkbox("Show advanced settings", value=False, help="Rarely needed. Everything here has a good default.")
+    # defaults for everything that lives under Advanced (and for the settings that are now fixed)
+    color_scale = "Auto (from arrows)"; arrow_trust = 0.7; past_ft = 1.5; ref_stimp = 10.0
+    show_detected = False; show_ignored = False
+    relief_ft = 1.0; double_boost = 0.3; bold_pct = 50; short_pct = 50; use_arrows = True; ignore_edge = True
+    if show_adv:
+        a1, a2 = st.columns(2)
+        color_scale = a1.selectbox("Heat map colors", ["Auto (from arrows)", "Red = high ground", "Red = low ground (flip)"],
+                                   help="Auto works on every map so far. Flip it only if a map clearly has the colors the other way round.")
+        arrow_trust = a2.slider("Trust the arrows", 0.0, 1.0, 0.7, 0.05,
+                                help="0 = use the colors only for direction, 1 = follow the printed arrows wherever they are.")
+        past_ft = a1.slider("Finish past the hole (ft)", 0.5, 3.0, 1.5, 0.25,
+                            help="How far past the hole the ball would stop. Slower pace = more break.")
+        ref_stimp = a2.slider("My stroke is calibrated for Stimp", 6.0, 13.0, 10.0, 0.5,
+                              help="'Hit it like a ... ft putt' is measured on a flat green at this speed.")
+        o1, o2 = st.columns(2)
+        show_detected = o1.checkbox("Show detected arrows", value=False, help="Orange = single head, purple = double head.")
+        show_ignored = o2.checkbox("Show ignored edge pixels", value=False, help="Tinted magenta.")
 
 heat_path = COURSES[course].get(hole_no)
 if not heat_path:
@@ -738,7 +731,7 @@ if gps_on:
 ball = (st.session_state.ball_coords["x_ft"], st.session_state.ball_coords["y_ft"])
 hole = (st.session_state.hole_coords["x_ft"], st.session_state.hole_coords["y_ft"])
 red_high = None if color_scale.startswith("Auto") else color_scale.startswith("Red = high")
-slope_args = (red_high, relief_ft, ignore_edge, use_arrows, arrow_trust, double_boost, None, 0.035 if auto_steep else None,
+slope_args = (red_high, relief_ft, ignore_edge, use_arrows, arrow_trust, double_boost, 0.04 if calm else None, 0.035 if calm else None,
               bold_pct / 100.0, depth_yd, width_yd)
 
 hole_raw = hole
@@ -760,7 +753,7 @@ if gps_on:
 
 too_close = np.hypot(hole[0] - ball[0], hole[1] - ball[1]) < 1.0
 sx, sy, meta = get_slope(heat_path, *slope_args)
-sol = None if too_close else get_solution(heat_path, slope_args, ball, hole, stimp, past_ft, short_pct / 100.0, max_grade_pct / 100.0)
+sol = None if too_close else get_solution(heat_path, slope_args, ball, hole, stimp, past_ft, short_pct / 100.0, 0.04, break_pct / 100.0)
 
 # heat map (tapping it moves the marker chosen above)
 with map_box:

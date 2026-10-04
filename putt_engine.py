@@ -5,7 +5,7 @@ Coordinates are feet. x = left to right across the green, y = front to back (up 
 """
 import numpy as np
 
-ENGINE_VERSION = "2026-10-04-i"   # app.py checks this so a stale copy of this file is caught
+ENGINE_VERSION = "2026-10-04-j"   # app.py checks this so a stale copy of this file is caught
 G = 32.17          # ft/s^2
 ROLL = 5.0 / 7.0   # solid sphere rolling: slope accel = (5/7) * g * slope
 CUP_IN = 4.25      # cup diameter, inches
@@ -624,13 +624,16 @@ def short_putt_factor(dist_ft, at_short=1.0, short_ft=3.0, full_at_ft=6.0):
     return at_short * w + (1.0 - w)
 
 
-def solve_putt(ball, hole, sx, sy, meta, stimp, past_ft=1.5, short_break=1.0, short_cap=None):
+def solve_putt(ball, hole, sx, sy, meta, stimp, past_ft=1.5, short_break=1.0, short_cap=None, break_scale=1.0):
     """Find the aim angle + speed that brings the ball to the hole, stopping ~past_ft beyond.
 
     Returns dict with aim_offset_ft (+ = left of hole), aim_side, path_frame (lateral, forward),
     aim_frame, max_break_ft, launch_speed, hit_error_ft.
     """
     dist, fwd, left = _frame(ball, hole)
+    if break_scale != 1.0:                           # the "Break amount" control: scales every slope, after all the calibration
+        sx, sy = sx * break_scale, sy * break_scale
+        meta = dict(meta, field=meta["field"] * break_scale)
     w_ = short_putt_weight(dist, 6.0, 8.0)           # slope ceiling: full strength through 6 ft, gone by 8 ft
     if short_cap and w_ > 0.001:                     # only ever bites on slopes steeper than a real green has
         fld = meta["field"]
