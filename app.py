@@ -22,10 +22,24 @@ st.set_page_config(page_title="CaddyBrain Green Reader", page_icon="⛳", layout
 
 # the three code files must be the same release; a stale copy of putt_engine.py or gps_mode.py gives confusing errors
 import inspect
-_needs = []
+import importlib
 REQUIRED_ENGINE = "2026-10-04-h"
-if (not hasattr(pe, "auto_geom") or "depth_yd" not in inspect.signature(pe.auto_geom).parameters
-        or getattr(pe, "ENGINE_VERSION", "") != REQUIRED_ENGINE):
+
+
+def _engine_ok():
+    return (hasattr(pe, "auto_geom") and "depth_yd" in inspect.signature(pe.auto_geom).parameters
+            and getattr(pe, "ENGINE_VERSION", "") == REQUIRED_ENGINE)
+
+
+if not _engine_ok() or not hasattr(gm, "calibrate"):
+    # Streamlit can keep an older copy of a module in memory after the file on disk has been replaced. Reload from disk first.
+    try:
+        pe = importlib.reload(pe)
+        gm = importlib.reload(gm)
+    except Exception:
+        pass
+_needs = []
+if not _engine_ok():
     _needs.append("putt_engine.py")
 if not hasattr(gm, "calibrate"):
     _needs.append("gps_mode.py")
