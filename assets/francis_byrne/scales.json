@@ -1,0 +1,78 @@
+{
+ "1": {
+  "depth_yd": 40.61,
+  "width_yd": 27.5
+ },
+ "2": {
+  "depth_yd": 63.66,
+  "width_yd": 23
+ },
+ "3": {
+  "depth_yd": 28.33,
+  "width_yd": 30.66
+ },
+ "4": {
+  "depth_yd": 28.13,
+  "width_yd": 27.33
+ },
+ "5": {
+  "depth_yd": 34,
+  "width_yd": 21.8
+ },
+ "6": {
+  "depth_yd": 33,
+  "width_yd": 29.25
+ },
+ "7": {
+  "depth_yd": 21.66,
+  "width_yd": 30
+ },
+ "8": {
+  "depth_yd": 42,
+  "width_yd": 23.7
+ },
+ "9": {
+  "depth_yd": 31.2,
+  "width_yd": 25.67
+ },
+ "10": {
+  "depth_yd": 34,
+  "width_yd": 19.33
+ },
+ "11": {
+  "depth_yd": 31.8,
+  "width_yd": 22.83
+ },
+ "12": {
+  "depth_yd": 29.24,
+  "width_yd": 25
+ },
+ "13": {
+  "depth_yd": 36,
+  "width_yd": 22.33
+ },
+ "14": {
+  "depth_yd": 24.33,
+  "width_yd": 35.33
+ },
+ "15": {
+  "depth_yd": 36,
+  "width_yd": 17.4
+ },
+ "16": {
+  "depth_yd": 29,
+  "width_yd": 33.26
+ },
+ "17": {
+  "depth_yd": 33.14,
+  "width_yd": 31.31
+ },
+ "18": {
+  "depth_yd": 29.4,
+  "width_yd": 34.34
+ },
+ "_course": {
+  "style": "intensity",
+  "steep_scale": 1.7
+ }
+}
