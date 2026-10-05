@@ -1,5 +1,7 @@
 import os
 import re
+import json
+import functools
 import numpy as np
 import streamlit as st
 import matplotlib
@@ -16,6 +18,11 @@ except ImportError as _e:                              # a code file wasn't uplo
     st.error(f"A code file is missing from your repository ({_e}). Upload putt_engine.py and gps_mode.py into the "
              "same folder as app.py, then reboot the app.")
     st.stop()
+
+try:
+    import intensity_mode as imode                      # optional: maps whose colors show slope steepness (e.g. Francis Byrne)
+except Exception:
+    imode = None
 
 # --- 1. CONFIG & SESSION STATE ---
 st.set_page_config(page_title="CaddyBrain Green Reader", page_icon="⛳", layout="centered")
@@ -99,6 +106,23 @@ def load_scales(course_name, hole):
         except Exception:
             continue
     return 0.0, 0.0
+
+@functools.lru_cache(maxsize=64)
+def _course_style_for_folder(folder):
+    """The optional "_course" entry of the folder's scales.json: {"style": "intensity", "steep_scale": 1.0}.
+    style "intensity" = colors show how STEEP the slope is (light blue flattest ... red steepest), read with the arrows for
+    direction. steep_scale multiplies every slope on the course (tune it against real putts); Break amount does the same live."""
+    try:
+        with open(os.path.join(folder, "scales.json")) as f:
+            e = json.load(f).get("_course") or {}
+        return {"style": str(e.get("style", "")).lower(), "steep_scale": float(e.get("steep_scale", 1.0) or 1.0)}
+    except Exception:
+        return {"style": "", "steep_scale": 1.0}
+
+
+def course_style(path):
+    return _course_style_for_folder(os.path.dirname(path))
+
 
 DISPLAY_WIDTH = 640     # heat map width on a computer
 PHONE_WIDTH = 340       # heat map width in phone layout (fits an iPhone in portrait)
@@ -189,6 +213,8 @@ def get_geom(path, depth_yd=0.0, width_yd=0.0):
     """Scale and origin read from the map itself (yard labels + green outline); depth/width typed in only when
     the map has no yard labels."""
     arr = np.array(load_heat_map(path))
+    if course_style(path)["style"] == "intensity" and imode is not None:
+        return imode.intensity_geom(arr, depth_yd or None, width_yd or None) or pe.make_geom(arr.shape[1], arr.shape[0], 42.0, 84.0)
     return pe.auto_geom(arr, depth_yd or None, width_yd or None) or pe.make_geom(arr.shape[1], arr.shape[0], 42.0, 84.0)
 
 
@@ -196,6 +222,9 @@ def get_geom(path, depth_yd=0.0, width_yd=0.0):
 def get_slope(path, red_is_high, relief_ft, ignore_edge, use_arrows, arrow_trust, double_boost, max_grade, p90_target, bold_weight, depth_yd=0.0, width_yd=0.0):
     img = load_heat_map(path)
     geom = get_geom(path, depth_yd, width_yd)
+    cs = course_style(path)
+    if cs["style"] == "intensity" and imode is not None:      # colors = steepness, arrows = direction (Calm steep maps does not apply)
+        return imode.build_intensity_field(np.array(img), geom, steep_scale=cs["steep_scale"])
     sx, sy, meta = pe.build_slope_field(np.array(img), geom, red_is_high, relief_ft, ignore_outline=ignore_edge,
                                         use_arrows=use_arrows, arrow_trust=arrow_trust, double_boost=double_boost,
                                         max_grade=max_grade, p90_target=p90_target, bold_weight=bold_weight)
@@ -452,6 +481,9 @@ def render_tutorial():
             "- **Maps with D and W printed instead of yard labels:** add a file called `scales.json` to the course folder, "
             "like `{\"1\": {\"depth_yd\": 29, \"width_yd\": 19}, \"2\": {\"depth_yd\": 29, \"width_yd\": 24}}`, and the app "
             "uses those numbers automatically.\n"
+            "- **Intensity-style maps (colors = how steep, not high/low):** add `\"_course\": {\"style\": \"intensity\", \"steep_scale\": 1.0}` "
+            "to that `scales.json`. The colors then set the size of the slope and the black arrows set the direction. "
+            "`steep_scale` multiplies every slope on the course; Break amount does the same live. Calm steep maps does not apply.\n"
             "- **Details & comparison** (bottom of the page) shows the green size, coordinates, and how many arrows were found.")
 
 
@@ -718,6 +750,12 @@ if geom["source"] == "estimate":
         width_yd = float(s2.number_input("Width, W (yards)", 0.0, 120.0, 0.0, 0.5, key=f"width_{course}_{hole_no}") or 0.0)
     if depth_yd > 0 or width_yd > 0:
         geom = get_geom(heat_path, depth_yd, width_yd)
+if course_style(heat_path)["style"] == "intensity" and imode is None:
+    st.error("This course uses intensity-style maps, which need intensity_mode.py next to app.py. Upload it and reboot the app.")
+    st.stop()
+if geom.get("scale_warning"):
+    with scale_box:
+        st.warning("Check this hole's depth/width: " + geom["scale_warning"] + ".")
 if reset_markers or st.session_state.get("marker_key") != (course, hole_no, depth_yd, width_yd):   # new hole or scale: markers restart
     b0, h0 = pe.default_markers(geom)
     st.session_state.ball_coords = {"x_ft": b0[0], "y_ft": b0[1]}
@@ -879,15 +917,18 @@ with details_box:
         if paced >= 1.0:
             st.write(f"**Paced length in use:** {paced:.0f} ft. The hole is drawn {paced:.0f} ft from the ball along the "
                      f"line to your hole marker (the marker itself is {np.hypot(hole_raw[0] - ball[0], hole_raw[1] - ball[1]):.0f} ft away).")
-    if sol is not None:
+    if sol is not None and meta.get("color_model") != "intensity":
         old_off, old_side = classic_read(img, geom, ball, hole, stimp)
         st.write(f"**New read:** {format_feet_inches(sol['aim_offset_ft'])} {sol['aim_side']}   "
                  f"(max break along the path {format_feet_inches(sol['max_break_ft'])})")
         st.write(f"**Old read:** {format_feet_inches(old_off)} {old_side}")
+    elif sol is not None:
+        st.write(f"**New read:** {format_feet_inches(sol['aim_offset_ft'])} {sol['aim_side']}   "
+                 f"(max break along the path {format_feet_inches(sol['max_break_ft'])})")
     if meta["arrows"]:
         agree = "n/a" if meta["agreement"] is None else f"{meta['agreement'] * 100:.0f}%"
         st.write(f"**Arrows found:** {len(meta['arrows'])} ({meta['n_double']} double-head)   "
                  f"**Agree with colors:** {agree}   "
-                 f"**Colors read as:** {'red = high' if meta['red_is_high'] else 'red = low'}")
+                 f"**Colors read as:** {'steepness (red = steepest)' if meta.get('color_model') == 'intensity' else ('red = high' if meta['red_is_high'] else 'red = low')}")
     else:
         st.write("**Arrows found:** none, so this read uses colors only.")
